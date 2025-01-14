@@ -1,0 +1,1861 @@
+---
+title: "SMURP Chamber expts"
+format: 
+  html:
+    embed-resources: true
+---
+
+```{r}
+
+library(tidyverse)
+library(dygraphs)
+library(patchwork)
+library(purrr)
+source("R/gems_functions.R")
+theme_set(theme_classic())
+```
+
+Natural nitrogen abundance and saturation concentration
+
+```{r}
+lab_temp = 23
+lab_sal = 31
+frac_abd_15 <- 0.00367
+frac_abd_14 <- 1 - frac_abd_15
+nit_sat_umol <- cal_n2_sat(sal = lab_sal, temp = lab_temp) # calculate for lab temp, sal, and pressure
+ar_sat_umol <- cal_ar_sat(sal = lab_sal, temp = lab_temp)
+```
+
+# start summary dataframe
+
+```{r}
+files <- list.files("data", 
+                    pattern = "^GEMS_2024.*\\.txt$",
+                    full.names = TRUE)
+
+experiment <- str_extract(files, "[^_]+_[^_]+(?=\\.txt$)")
+
+t0 <- as.POSIXct(c("2024-08-19 15:30:00",
+                   "2024-08-20 15:47:00",
+                   "2024-08-21 15:15:00",
+                   "2024-08-22 13:14:00",
+                   "2024-09-11 13:33:00",
+                   "2024-09-12 16:30:00",
+                   "2024-09-13 12:34:00",
+                   "2024-09-16 14:04:00",
+                   "2024-09-24 13:27:00",
+                   "2024-09-25 11:24:00",
+                   "2024-09-26 13:05:00",
+                   "2024-09-30 13:07:00"))
+
+bg_29 <- c(7.4E-12, 
+           1E-11, 
+           8.1E-12, 
+           1E-11, 
+           1.1E-11, 
+           1.1E-11, 
+           1.1E-11, 
+           9E-12, 
+           9E-12, 
+           9.1E-12, 
+           9.0E-12, 
+           9.0E-12)
+
+bg_30 <- c(2.1E-12, 
+           5.3E-12, 
+           2.3E-12, 
+           5.2E-12, 
+           5.6E-12, 
+           5.6E-12, 
+           5.6E-12, 
+           5.0E-12, 
+           4.8E-12, 
+           4.7E-12, 
+           4.7E-12, 
+           4.7E-12)
+
+bg_40_28 <- c(0.036,
+              0.041,
+              0.032,
+              0.039,
+              0.038,
+              0.038,
+              0.038,
+              0.039,
+              0.040,
+              0.040,
+              0.040,
+              0.039)
+
+rate_metadata <- tibble(datafile = files,
+                        experiment = as.factor(experiment),
+                        replicate = as.factor(rep(1:3, each = 4)),
+                        grass = grepl("grass", experiment), 
+                        open = grepl("open", experiment),
+                        t_0 = t0,
+                        bg_29 = bg_29,
+                        bg_30 = bg_30,
+                        bg_40_28 = bg_40_28,
+                        t_anox = c(10000, 12000,7000, 14000, 28000, 17000, 6000,
+                                   8000, 15000, 12000, 7000, 8000),
+                        t_peak = c(72000, 41000, 29000, 44000, 92000, 65000, 47000,
+                                   41000, 48000, 57000, 32000, 37000),
+)
+```
+
+# Initial plots for metadata
+
+Plot raw and normalized data to find 
+t0, t_anox, t_peak,
+bg_29, bg_30, bg_40_28
+
+## Read all files and produce plots
+
+```{r}
+read_all_gems <- function(file) {
+  df <- read_gems(file)
+  df_wide <- rga_wider(df)
+  df_ratios <- rga_ratios(df_wide)
+}
+
+df <- map(rate_metadata$datafile, read_all_gems)
+
+map(df, plot_wide)
+
+plot_ar <- function(df) {
+    df %>% 
+    select(timestamp, mass_40_28) %>% 
+    filter(mass_40_28 < 0.1) |> 
+    dygraph() %>% 
+    dyOptions(logscale = TRUE,
+              digitsAfterDecimal = 4)
+}
+map(df, plot_ar)
+```
+
+## Calc molarities
+
+```{r}
+
+nested_data <- tibble(data_wide = df) |> 
+  bind_cols(rate_metadata)
+
+nested_data <- nested_data |> 
+  mutate(data_norm = pmap(list(data_wide, bg_29, bg_30, bg_40_28,
+                               nit_sat_umol, ar_sat_umol, t0), 
+                          norm_rga))
+```
+
+Oxygen minimums
+
+```{r}
+plot_o2 <- function(df) {
+    df %>% 
+    select(et, mass_32) %>% 
+    dygraph() %>% 
+    dyOptions(logscale = TRUE,
+              digitsAfterDecimal = 4)
+}
+map(nested_data$data_norm, plot_o2)
+```
+
+max DN
+
+```{r}
+plot_30 <- function(df) {
+    df %>% 
+    select(et, umol_30) %>% 
+    dygraph() %>% 
+    dyOptions(logscale = TRUE,
+              digitsAfterDecimal = 4)
+}
+map(nested_data$data_norm, plot_30)
+```
+
+## Ar loss rates
+
+```{r}
+calc_ar_loss_rate <- function(df, t_o2_min) {
+  ar <- df |> 
+    select(et, umol_40) |>  
+    filter(et > t_o2_min - 1000,
+           et < t_o2_min + 1000)
+  
+  coef(lm(umol_40 ~ et, data = ar))[2] * 3600 * 24
+}
+
+nested_data <- nested_data |> 
+  mutate(ar_loss_rate = pmap_dbl(list(data_norm, t_anox),
+                             calc_ar_loss_rate))
+```
+
+## DN Rates
+
+DN rate at O2 minimum and max mass 30
+
+```{r}
+nested_data <- nested_data |> 
+  mutate(dn_rate_max = pmap_dbl(list(data_norm, t_peak),
+                                calc_rate),
+         dn_rate_o2_min = pmap_dbl(list(data_norm, t_anox),
+                                   calc_rate))
+```
+
+Ar loss corrected rate
+
+```{r}
+nested_data <- nested_data |> 
+  mutate(dn_rate_o2_min_ar_cor = dn_rate_o2_min - ar_loss_rate)
+```
+
+# Summary plots
+
+```{r}
+init <- ggplot(nested_data, aes(experiment, dn_rate_o2_min_ar_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production [umol/day]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ar <- ggplot(nested_data, aes(experiment, -ar_loss_rate)) +
+  geom_boxplot() +
+  ylab("Ar loss rate [umol/day]")
+
+ox <- ggplot(nested_data, aes(experiment, t_anox)) +
+  geom_boxplot() +
+  ylab("Elapsed Time to anoxia")
+
+init / ar / ox
+```
+
+# Chamber experiments
+
+Chamber is cut-off 1 l polyethelyne nalgene bottle.
+Fine screen glued into shoulder of bottle.
+Cap has ports for inlet, outlet, temp, O2.
+Recirculated flow using impeller pump, 
+flowing past MIMS membrane. Label injected through luer port on return line.
+
+## 2024-08-19 chamber sed closed sided
+
+Chamber label experiment in sed-only, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 5cm.
+* Started pump, purge bubbles. Large initial bubble below screen.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+* Power outage
+
+```{r}
+label_start <-  as.POSIXct("2024-08-19 15:30:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-08-19_chamber_sed_closed.txt") |> 
+  mutate(timestamp = ifelse(timestamp > "2024-08-18",
+                            timestamp,
+                            timestamp + 177775450),
+         timestamp = as.POSIXct(timestamp),
+         experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide) 
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 7.4E-12
+bg_30 <- 2.1E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+Argon concentration. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  select(et, umol_40) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, umol_40) %>% 
+  filter(et > 9000,
+         et < 11000)
+
+rate_sum$argon[1] <- coef(lm(umol_40 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+Ar loss rate: `r ar_loss_rate_sed_closed`
+
+```{r}
+df_proc %>% 
+  mutate(mass_29_28 = mass_29/mass_28,
+         mass_30_28 = mass_30/mass_28) |> 
+  select(et, mass_29_28, mass_30_28) %>% 
+  dygraph()
+```
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_sed_closed_init <- calc_rate(df_proc, c(9000, 11000))
+```
+
+Initial rate of mass 30 production: `r umol_30_rate_sed_closed_init` umol/day.
+
+50% ar rate
+
+```{r}
+umol_30_rate_sed_closed_50 <- calc_rate(df_proc, c(7400, 15000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_sed_closed_max <- calc_rate(df_proc, c(70000, 72000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_sed_closed_avg <- calc_rate(df_proc, c(0, 72000))
+```
+
+## 2024-08-20 chamber sed open sided
+
+Chamber label experiment in sed-only, open sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 5cm.
+* Started pump, purge bubbles. Large initial bubble below screen.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+Power outage at 8:30 AM. Past peak. Secondary peak of mass 46. 
+
+```{r}
+label_start <-  as.POSIXct("2024-08-20 15:47:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-08-20_chamber_sed_open.txt") |> 
+  mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_ts <- df %>% 
+  mutate(cycle = cumsum(mass == 18)) %>% 
+  group_by(cycle) %>% 
+  mutate(cycle_ts = mean(timestamp)) %>% 
+  ungroup()
+
+df_wide <- df_ts %>% 
+  select(timestamp = cycle_ts, mass, pressure, experiment) %>% 
+  pivot_wider(names_from = mass, names_prefix = "mass_",
+              values_from = pressure)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 1E-11
+bg_30 <- 5.3E-12
+bg_40 <- 0.04
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 11000,
+         et < 13000)
+
+ar_loss_rate_sed_open <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Uncalibrated Ar loss rate: `r ar_loss_rate_sed_open`
+
+pick time with even slope
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  mutate(et = as.integer(et)) %>% 
+  dygraph() 
+```
+
+initial rate
+
+```{r}
+umol_30_rate_sed_open_init <- calc_rate(df_proc, c(11000, 13000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_sed_open_50 <- calc_rate(df_proc, c(1400, 15000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_sed_open_max <- calc_rate(df_proc, c(38000, 40000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_sed_open_avg <- calc_rate(df_proc, c(0, 41000))
+```
+
+
+## 2024-08-21 chamber grass open sided
+
+
+```{r}
+label_start <-  as.POSIXct("2024-08-21 15:15:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-08-21_chamber_grass_open.txt") |> 
+  mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 8.1E-12
+bg_30 <- 2.3E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.08) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 13000,
+         et < 16000)
+
+ar_loss_rate_grass_open <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rate: `r ar_loss_rate_grass_open`
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph() 
+```
+
+initial rate
+
+```{r}
+umol_30_rate_grass_open_init <- calc_rate(df_proc, c(13000, 15000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_grass_open_50 <- calc_rate(df_proc, c(7500, 15000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_grass_open_max <- calc_rate(df_proc, c(30000, 32000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_grass_open_avg <- calc_rate(df_proc, c(0, 44000))
+```
+
+## 2024-08-22 chamber grass closed sided
+
+```{r}
+label_start <-  as.POSIXct("2024-08-22 13:14:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-08-22_chamber_grass_closed.txt") |> 
+  mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 1E-11
+bg_30 <- 5.2E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.12) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 6000,
+         et < 8000)
+
+ar_loss_rate_grass_closed <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Uncalibrated Ar loss rate: `r ar_loss_rate_grass_closed`
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph() 
+```
+
+
+initial rate
+
+```{r}
+umol_30_rate_grass_closed_init <- calc_rate(df_proc, c(6000, 8000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_grass_closed_50 <- calc_rate(df_proc, c(1500, 4000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_grass_closed_max <- calc_rate(df_proc, c(21000, 23000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_grass_closed_avg <- calc_rate(df_proc, c(0, 29000))
+```
+
+# Replicates
+
+## 2024-09-11 chamber sed closed sided
+
+Chamber label experiment in sed-only, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-11 13:33:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-11_chamber_sed_closed.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 1.1E-11
+bg_30 <- 5.6E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 27000,
+         et < 29000)
+
+ar_loss_rate_sed_closed_2 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+Ar loss rate: `r ar_loss_rate_sed_closed_2`
+
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+initial rate
+
+```{r}
+umol_30_rate_sed_closed_init_2  <- calc_rate(df_proc, c(27000, 29000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_sed_closed_50_2 <- calc_rate(df_proc, c(1000, 9000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_sed_closed_max_2 <- calc_rate(df_proc, c(90000, 92000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_sed_closed_avg_2 <- calc_rate(df_proc, c(0, 92000))
+```
+
+## 2024-09-12 chamber sed open sided
+
+Chamber label experiment in sed-only, open sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-12 16:30:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-12_chamber_sed_open.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 1.1E-11
+bg_30 <- 5.6E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 16000,
+         et < 18000)
+
+ar_loss_rate_sed_open_2 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+Ar loss rate: `r ar_loss_rate_sed_open_2`
+
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_sed_open_init_2 <- calc_rate(df_proc, c(16000, 18000))
+```
+
+Initial rate of mass 30 production: `r umol_30_rate_sed_closed_init` umol/day.
+
+50% ar rate
+
+```{r}
+umol_30_rate_sed_open_50_2 <- calc_rate(df_proc, c(1000, 5500))
+```
+
+max rate
+
+```{r}
+umol_30_rate_sed_open_max_2 <- calc_rate(df_proc, c(62000, 65000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_sed_open_avg_2 <- calc_rate(df_proc, c(1000, 65000))
+```
+
+## 2024-09-11 chamber grass closed sided
+
+Chamber label experiment in seagrass, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-13 12:34:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-13_chamber_grass_closed.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 1.1E-11
+bg_30 <- 5.6E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 5000,
+         et < 7000)
+
+ar_loss_rate_grass_closed_2 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+Ar loss rate: `r ar_loss_rate_sed_closed_2`
+
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  mutate(et = as.integer(et)) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_grass_closed_init_2 <- calc_rate(df_proc, c(5000, 7000))
+```
+
+Initial rate of mass 30 production: `r umol_30_rate_sed_closed_init` umol/day.
+
+50% ar rate
+
+```{r}
+umol_30_rate_grass_closed_50_2 <- calc_rate(df_proc, c(3000, 8000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_grass_closed_max_2 <- calc_rate(df_proc, c(45000, 47000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_grass_closed_avg_2 <- calc_rate(df_proc, c(0, 47000))
+```
+
+## 2024-09-16 chamber grass open sided
+
+Chamber label experiment in sed-only, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-16 14:04:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-16_chamber_grass_open.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 9E-12
+bg_30 <- 5.0E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 7000,
+         et < 9000)
+
+ar_loss_rate_grass_open_2 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+Ar loss rate: `r ar_loss_rate_sed_closed_2`
+
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_grass_open_init_2 <- calc_rate(df_proc, c(7000, 9000))
+```
+
+Initial rate of mass 30 production: `r umol_30_rate_sed_closed_init` umol/day.
+
+50% ar rate
+
+```{r}
+umol_30_rate_grass_open_50_2 <- calc_rate(df_proc, c(1000, 4000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_grass_open_max_2 <- calc_rate(df_proc, c(39000, 41000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_grass_open_avg_2 <- calc_rate(df_proc, c(0, 41000))
+```
+
+# 3rd replicate
+
+## 2024-09-24 chamber sed closed
+
+Chamber label experiment in sed-only, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-24 13:27:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-24_chamber_sed_closed.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 9E-12
+bg_30 <- 4.8E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 14000,
+         et < 16000)
+
+ar_loss_rate_sed_closed_3 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_sed_closed_init_3 <- calc_rate(df_proc, c(14000, 16000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_sed_closed_50_3 <- calc_rate(df_proc, c(1000, 4000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_sed_closed_max_3 <- calc_rate(df_proc, c(42000, 44000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_sed_closed_avg_3 <- calc_rate(df_proc, c(0, 48000))
+```
+
+## 2024-09-25 chamber sed open
+
+Chamber label experiment in sed-only, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-25 11:24:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-25_chamber_sed_open.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 9.1E-12
+bg_30 <- 4.7E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 11000,
+         et < 13000)
+
+ar_loss_rate_sed_open_3 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_sed_open_init_3 <- calc_rate(df_proc, c(11000, 13000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_sed_open_50_3 <- calc_rate(df_proc, c(1000, 4000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_sed_open_max_3 <- calc_rate(df_proc, c(53000, 55000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_sed_open_avg_3 <- calc_rate(df_proc, c(0, 57000))
+```
+
+## 2024-09-26 chamber grass closed
+
+Chamber label experiment in grass, closed sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-26 13:05:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-26_chamber_grass_closed.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 9.0E-12
+bg_30 <- 4.7E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 6000,
+         et < 8000)
+
+ar_loss_rate_grass_closed_3 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_grass_closed_init_3 <- calc_rate(df_proc, c(6000, 8000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_grass_closed_50_3 <- calc_rate(df_proc, c(1000, 4000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_grass_closed_max_3 <- calc_rate(df_proc, c(26000, 28000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_grass_closed_avg_3 <- calc_rate(df_proc, c(0, 32000))
+```
+
+## 2024-09-30 chamber grass open
+
+Chamber label experiment in grass, open sided crate.
+
+* Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
+* Started pump, purge bubbles.
+* Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
+
+```{r}
+label_start <-  as.POSIXct("2024-09-30 13:07:00")
+
+df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-09-30_chamber_grass_open.txt") |> 
+         mutate(experiment = case_when(timestamp < label_start ~ "control",
+                                TRUE ~ "label"))
+```
+
+Calculate slope and rate using Scott's method.
+
+Give each measurement loop an average timestamp and pivot to wide format.
+
+
+```{r}
+df_wide <- rga_wider(df)
+```
+
+Plot to find rough background values (should do this programmatically)
+
+```{r}
+plot_wide(df_wide)
+```
+
+Backgrounds from plot
+
+```{r}
+bg_29 <- 9.0E-12
+bg_30 <- 4.7E-12
+```
+
+Normalized partial pressures and molar concentrations
+
+```{r}
+df_proc <- norm_rga(df_wide, 
+                    bg_29, bg_30, bg_40, 
+                    nit_sat_umol = nit_sat_umol, 
+                    ar_sat_umol = ar_sat_umol, 
+                    t0 = label_start)
+```
+
+time of oxygen minimum
+
+```{r}
+df_proc %>% 
+  select(et, mass_32) %>% 
+  dygraph()
+```
+
+Nitrogen normalized argon. Use slope to calculate diffusive loss.
+
+```{r}
+df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(mass_40_28 < 0.1) %>% 
+  dygraph()
+```
+
+```{r}
+ar <- df_proc %>% 
+  select(et, mass_40_28) %>% 
+  filter(et > 7000,
+         et < 9000)
+
+ar_loss_rate_grass_open_3 <- coef(lm(mass_40_28 ~ et, data = ar))[2] * 3600 * 24
+```
+
+Ar loss rates are normalized to N2, but uncalibrated for now.
+
+Ar loss rate: `r ar_loss_rate_sed_closed_2`
+
+
+```{r}
+df_proc %>% 
+  select(et, umol_30) %>% 
+  dygraph()
+```
+
+Use least-squares linear regression to get slope of mass 30 production
+
+```{r}
+umol_30_rate_grass_open_init_3 <- calc_rate(df_proc, c(7000, 9000))
+```
+
+50% ar rate
+
+```{r}
+umol_30_rate_grass_open_50_3 <- calc_rate(df_proc, c(1000, 4000))
+```
+
+max rate
+
+```{r}
+umol_30_rate_grass_open_max_3 <- calc_rate(df_proc, c(33000, 35000))
+```
+
+avg rate
+
+```{r}
+umol_30_rate_grass_open_avg_3 <- calc_rate(df_proc, c(0, 37000))
+```
+
+
+# Rate summary
+
+argon is nitrogen-normalized unitless argon loss per day
+
+nitrogen is umol 15N2 production per day
+
+```{r}
+rate_sum <- tibble(experiment = as.factor(c("sed-closed", "sed-open", "grass-closed", "grass-open", "sed-closed", "sed-open", "grass-closed", "grass-open", "sed-closed", "sed-open", "grass-closed", "grass-open")),
+                   replicate = as.factor(c(1,1,1,1,2,2,2,2,3,3,3,3)),
+                   argon = c(ar_loss_rate_sed_closed, ar_loss_rate_sed_open, ar_loss_rate_grass_closed, ar_loss_rate_grass_open, ar_loss_rate_sed_closed_2, ar_loss_rate_sed_open_2, ar_loss_rate_grass_closed_2, ar_loss_rate_grass_open_2, ar_loss_rate_sed_closed_3, ar_loss_rate_sed_open_3, ar_loss_rate_grass_closed_3, ar_loss_rate_grass_open_3),
+                   t_anox = c(10000, 12000,7000, 14000, 28000, 17000, 6000, 8000, 15000, 12000, 7000, 8000)/3600,
+                   t_peak = c(72000, 41000, 29000, 44000, 92000, 65000, 47000, 41000, 48000, 57000, 32000, 37000)/3600,
+                   dn_init = c(umol_30_rate_sed_closed_init, umol_30_rate_sed_open_init, umol_30_rate_grass_closed_init, umol_30_rate_grass_open_init, umol_30_rate_sed_closed_init_2, umol_30_rate_sed_open_init_2, umol_30_rate_grass_closed_init_2, umol_30_rate_grass_open_init_2, umol_30_rate_sed_closed_init_3, umol_30_rate_sed_open_init_3, umol_30_rate_grass_closed_init_3, umol_30_rate_grass_open_init_3),
+                   dn_50 = c(umol_30_rate_sed_closed_50, umol_30_rate_sed_open_50, umol_30_rate_grass_closed_50, umol_30_rate_grass_open_50, umol_30_rate_sed_closed_50_2, umol_30_rate_sed_open_50_2, umol_30_rate_grass_closed_50_2, umol_30_rate_grass_open_50_2, umol_30_rate_sed_closed_50_3, umol_30_rate_sed_open_50_3, umol_30_rate_grass_closed_50_3,  umol_30_rate_grass_open_50_3),
+                   dn_avg = c(umol_30_rate_sed_closed_avg, umol_30_rate_sed_open_avg, umol_30_rate_grass_closed_avg, umol_30_rate_grass_open_avg, umol_30_rate_sed_closed_avg_2, umol_30_rate_sed_open_avg_2, umol_30_rate_grass_closed_avg_2, umol_30_rate_grass_open_avg_2, umol_30_rate_sed_closed_avg_3, umol_30_rate_sed_open_avg_3, umol_30_rate_grass_closed_avg_3,  umol_30_rate_grass_open_avg_3),
+                   dn_max = c(umol_30_rate_sed_closed_max, umol_30_rate_sed_open_max, umol_30_rate_grass_closed_max, umol_30_rate_grass_open_max, umol_30_rate_sed_closed_max_2, umol_30_rate_sed_open_max_2, umol_30_rate_grass_closed_max_2, umol_30_rate_grass_open_max_2, umol_30_rate_sed_closed_max_3, umol_30_rate_sed_open_max_3, umol_30_rate_grass_closed_max_3,  umol_30_rate_grass_open_max_3),
+                   grass = c(FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, TRUE, FALSE), 
+                   open = c(FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE),
+                   )
+
+knitr::kable(rate_sum, digits = c(1, 1, 3, 1, 1, 0, 0, 0, 0, 1, 1), col.names = c("Experiment", "Replicate", "Ar loss", "Time to Peak", "Time to Anoxia", "Initial DN", "DN to 50% Ar", "Avg DN", "Max DN", "Grass", "Open sided"))
+```
+
+```{r}
+init <- ggplot(rate_sum, aes(experiment, dn_init, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Initial DN rate",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank(),
+    axis.title.y = element_blank())
+
+avg <- ggplot(rate_sum, aes(experiment, dn_avg, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average DN rate",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+max <- ggplot(rate_sum, aes(experiment, dn_max, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Maximum DN rate",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.y = element_blank())
+
+ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylab("Ar loss rate")
+
+init / avg / max / ar
+```
+
+Initial attempt at correction for Ar loss
+
+If Ar loss is dimensionless, but linear, can we correct by ratio of loss
+to the least loss? ie, sed closed is no correction, others corrected
+by factor to sed closed.
+
+```{r}
+rate_sum <- rate_sum %>% 
+  mutate(ar_factor = argon / rate_sum$argon[[1]],
+         dn_init_cor = dn_init * ar_factor,
+         dn_50_cor = dn_50 * ar_factor,
+         dn_avg_cor = dn_avg * ar_factor,
+         dn_max_cor = dn_max * ar_factor)
+```
+
+
+```{r}
+init <- ggplot(rate_sum, aes(experiment, dn_init_cor, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylab("Ar loss rate")
+
+init / ar
+```
+
+```{r}
+init <- ggplot(rate_sum, aes(experiment, dn_init_cor, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylab("Ar loss rate")
+
+ox <- ggplot(rate_sum, aes(experiment, t_anox, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylab("Time to anoxia")
+
+init / ar / ox
+```
+
+```{r}
+init <- ggplot(rate_sum, aes(experiment, dn_init_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ar <- ggplot(rate_sum, aes(experiment, -argon)) +
+  geom_boxplot() +
+  ylab("Ar loss rate")
+
+ox <- ggplot(rate_sum, aes(experiment, t_anox)) +
+  geom_boxplot() +
+  ylab("Time to anoxia")
+
+init / ar / ox
+```
+
+Grass vs sed only
+
+```{r}
+init <- ggplot(rate_sum, aes(grass, dn_init_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ar <- ggplot(rate_sum, aes(grass, -argon)) +
+  geom_boxplot() +
+  ylab("Ar loss rate")
+
+ox <- ggplot(rate_sum, aes(grass, t_anox)) +
+  geom_boxplot() +
+  ylab("Time to anoxia")
+
+init / ar / ox
+```
+
+
+```{r}
+init <- ggplot(rate_sum, aes(experiment, dn_init_cor, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Initial DN rate",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank(),
+    axis.title.y = element_blank())
+
+dn50 <- ggplot(rate_sum, aes(experiment, dn_50_cor, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "DN rate to 50% Ar",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank(),
+    axis.title.y = element_blank())
+
+avg <- ggplot(rate_sum, aes(experiment, dn_avg_cor, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average DN rate",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+max <- ggplot(rate_sum, aes(experiment, dn_max_cor, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Maximum DN rate",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.y = element_blank())
+
+ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylab("Ar loss rate")
+
+init / dn50 / avg / max / ar
+```
+```{r}
+rate_sum %>% 
+  select(experiment, dn_init, dn_init_cor) %>% 
+  pivot_longer(c(dn_init, dn_init_cor)) %>% 
+  ggplot(aes(experiment, value, fill = name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Initial DN rate",
+       subtitle = "With/without Argon correction",
+       y = "15N2 production (umol/day)")
+```
+
+initial rates from start to 50% argon loss
+
+Uncorrected rates
+
+```{r}
+rate_sum %>% 
+  select(experiment, dn_init, dn_50) %>% 
+  pivot_longer(c(dn_init, dn_50)) %>% 
+  ggplot(aes(experiment, value, fill = name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Initial DN rate",
+       subtitle = "Initial 'even' slope and rate from t0 to 50% Ar loss",
+       y = "15N2 production (umol/day)")
+
+```
+
+Ar loss corrected
+
+```{r}
+rate_sum %>% 
+  select(experiment, dn_init_cor, dn_50_cor) %>% 
+  pivot_longer(c(dn_init_cor, dn_50_cor)) %>% 
+  ggplot(aes(experiment, value, fill = name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Ar Loss Corrected Initial DN rate",
+       subtitle = "Initial 'even' slope and rate from t0 to 50% Ar loss",
+       y = "15N2 production (umol/day)")
+
+```
+
+ANOVA
+
+```{r}
+a <- aov(dn_init_cor ~ experiment, data = rate_sum)
+summary(a)
+```
+
+```{r}
+a <- aov(dn_init_cor ~ grass + open, data = rate_sum)
+summary(a)
+```
+
+Grass vs no grass
+
+```{r}
+a <- aov(dn_init_cor ~ grass, data = rate_sum)
+summary(a)
+```
+
+between replicates
+
+```{r}
+a <- aov(dn_init_cor ~ replicate, data = rate_sum)
+summary(a)
+```
+
+
+Normalize results to a range of 0-1 by replicate 
+to remove effect of overall higher rate in final replicate
+
+```{r}
+scale_rate <- function(rate) {
+  (rate - min(rate))/(max(rate) - min(rate))
+}
+
+rate_sum <- rate_sum %>% 
+  group_by(replicate) %>% 
+  mutate(norm_rate = scale_rate(dn_init_cor))
+```
+
+```{r}
+a <- aov(norm_rate ~ experiment, data = rate_sum)
+summary(a)
+```
+
+```{r}
+a <- aov(norm_rate ~ grass + open, data = rate_sum)
+summary(a)
+```
+
+Grass vs no grass
+
+```{r}
+a <- aov(norm_rate ~ grass, data = rate_sum)
+summary(a)
+```
+
+```{r}
+init <- ggplot(rate_sum, aes(experiment, norm_rate)) +
+  geom_boxplot() +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production (umol/day)") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ar <- ggplot(rate_sum, aes(experiment, -argon)) +
+  geom_boxplot() +
+  ylab("Ar loss rate")
+
+ox <- ggplot(rate_sum, aes(experiment, t_anox)) +
+  geom_boxplot() +
+  ylab("Time to anoxia")
+
+init / ar / ox
+```
