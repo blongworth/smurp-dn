@@ -188,11 +188,14 @@ read_gems <- function(file) {
     select(timestamp, mass, current, pressure)
 }
 
-plot_wide <- function(df_wide) {
+plot_wide <- function(df_wide, title = "GEMS Data") {
   df_wide %>% 
     select(timestamp, mass_28, mass_29, mass_30, mass_32, mass_40) %>% 
-    dygraph() %>% 
-    dyOptions(logscale = TRUE)
+    dygraph(main = title) %>% 
+    dyAxis("y", label = "Pressure (Torr)") %>%
+    dyOptions(logscale = TRUE) |> 
+    dyRangeSelector() |>
+    dyLegend()
 }
 
 plot_gems <- function(data, log = TRUE) {

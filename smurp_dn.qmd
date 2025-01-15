@@ -16,7 +16,24 @@ theme_set(theme_classic())
 
 # Metadata
 
-Natural nitrogen abundance and saturation concentration
+### Natural nitrogen abundance and saturation concentration
+
+* Natural abundance not used. Should be used for background correction?
+* Argon and Nitrogen saturation determined for mean coastal salinity
+and room temperature. ESL ambient seawater temp changed from 22 to 19C
+over the three replicates.
+
+Sensitivity of n2 and Ar sat to temp:
+
+```{r}
+sat_sens <- tibble(temp = c(23, 22, 19), sal = 31)
+sat_sens <- sat_sens |> 
+  mutate(n2_sat = cal_n2_sat(sal, temp),
+         ar_sat = cal_ar_sat(sal, temp))
+sat_sens
+```
+
+### Calculate constants
 
 ```{r}
 lab_temp = 23
@@ -27,7 +44,9 @@ nit_sat_umol <- cal_n2_sat(sal = lab_sal, temp = lab_temp) # calculate for lab t
 ar_sat_umol <- cal_ar_sat(sal = lab_sal, temp = lab_temp)
 ```
 
-Files, times, treatments, backgrounds
+### Files, times, treatments, backgrounds
+
+Times and backgrounds determined by inspection of plots below.
 
 ```{r}
 files <- list.files("data", 
@@ -88,7 +107,7 @@ bg_40_28 <- c(0.036,
               0.040,
               0.039)
 
-rate_metadata <- tibble(datafile = files,
+metadata <- tibble(datafile = files,
                         experiment = as.factor(experiment),
                         replicate = as.factor(rep(1:3, each = 4)),
                         grass = grepl("grass", experiment), 
@@ -97,10 +116,12 @@ rate_metadata <- tibble(datafile = files,
                         bg_29 = bg_29,
                         bg_30 = bg_30,
                         bg_40_28 = bg_40_28,
-                        t_anox = c(10000, 12000,7000, 14000, 28000, 17000, 6000,
-                                   8000, 15000, 12000, 7000, 8000),
-                        t_peak = c(72000, 41000, 29000, 44000, 92000, 65000, 47000,
-                                   41000, 48000, 57000, 32000, 37000),
+                        t_anox = c(20000, 12000, 16000, 7000, 
+                                   28000, 17000, 6000, 8000, 
+                                   15000, 12000, 7000, 8000),
+                        t_peak = c(72000, 41000, 44000, 23000, 
+                                   92000, 65000, 47000, 41000, 
+                                   48000, 57000, 32000, 37000),
 )
 ```
 
@@ -119,61 +140,81 @@ read_all_gems <- function(file) {
   df_ratios <- rga_ratios(df_wide)
 }
 
-df <- map(rate_metadata$datafile, read_all_gems)
+alldata_wide <- metadata |> 
+  mutate(data_wide = map(datafile, read_all_gems))
+```
 
-map(df, plot_wide)
+General plots for mass 29 and 30 background
 
-plot_ar <- function(df) {
+```{r}
+pmap(list(alldata_wide$data_wide, 
+          paste(alldata_wide$experiment, 
+                alldata_wide$replicate, sep = "-")), 
+     plot_wide)
+```
+
+Argon-Nitrogen ratio plot for Ar/N2 background
+
+```{r}
+plot_ar <- function(df, title) {
     df %>% 
     select(timestamp, mass_40_28) %>% 
     filter(mass_40_28 < 0.1) |> 
-    dygraph() %>% 
+    dygraph(main = title) %>% 
     dyOptions(logscale = TRUE,
               digitsAfterDecimal = 4)
 }
-map(df, plot_ar)
+
+pmap(list(alldata_wide$data_wide, 
+          paste(alldata_wide$experiment, 
+                alldata_wide$replicate, sep = "-")), 
+     plot_ar)
 ```
 
-## Calc molarities
+## Calculate molarities
 
 ```{r}
-
-nested_data <- tibble(data_wide = df) |> 
-  bind_cols(rate_metadata)
-
-nested_data <- nested_data |> 
+alldata_norm <- alldata_wide |> 
   mutate(data_norm = pmap(list(data_wide, bg_29, bg_30, bg_40_28,
                                nit_sat_umol, ar_sat_umol, t0), 
                           norm_rga))
 ```
 
-Oxygen minimums
+## Oxygen minimums
 
 ```{r}
-plot_o2 <- function(df) {
+plot_o2 <- function(df, title) {
     df %>% 
     select(et, mass_32) %>% 
-    dygraph() %>% 
+    dygraph(main = title) %>% 
     dyOptions(logscale = TRUE,
               digitsAfterDecimal = 4)
 }
-map(nested_data$data_norm, plot_o2)
+
+pmap(list(alldata_norm$data_norm, 
+          paste(alldata_norm$experiment, 
+                alldata_norm$replicate, sep = "-")), 
+     plot_o2)
 ```
 
-max DN
+## max DN
 
 ```{r}
-plot_30 <- function(df) {
+plot_30 <- function(df, title) {
     df %>% 
     select(et, umol_30) %>% 
-    dygraph() %>% 
-    dyOptions(logscale = TRUE,
-              digitsAfterDecimal = 4)
+    dygraph(main = title)
 }
-map(nested_data$data_norm, plot_30)
+
+pmap(list(alldata_norm$data_norm, 
+          paste(alldata_norm$experiment, 
+                alldata_norm$replicate, sep = "-")), 
+     plot_30)
 ```
 
-## Ar loss rates
+## Calculate final rates
+
+### Ar loss rates
 
 ```{r}
 calc_ar_loss_rate <- function(df, t_o2_min) {
@@ -185,18 +226,18 @@ calc_ar_loss_rate <- function(df, t_o2_min) {
   coef(lm(umol_40 ~ et, data = ar))[2] * 3600 * 24
 }
 
-nested_data <- nested_data |> 
+alldata_ar <- alldata_norm |> 
   mutate(ar_loss_rate = pmap_dbl(list(data_norm, t_anox),
                              calc_ar_loss_rate))
 ```
 
-## DN Rates
+### DN Rates
 
 DN rate at O2 minimum and max mass 30
 
 ```{r}
-nested_data <- nested_data |> 
-  mutate(dn_rate_max = pmap_dbl(list(data_norm, t_peak),
+alldata_dn <- alldata_ar |> 
+  mutate(dn_rate_max = pmap_dbl(list(data_norm, t_peak - 1000),
                                 calc_rate),
          dn_rate_o2_min = pmap_dbl(list(data_norm, t_anox),
                                    calc_rate))
@@ -205,25 +246,44 @@ nested_data <- nested_data |>
 Ar loss corrected rate
 
 ```{r}
-nested_data <- nested_data |> 
+alldata <- alldata_dn |> 
   mutate(dn_rate_o2_min_ar_cor = dn_rate_o2_min - ar_loss_rate)
+```
+
+# Summary table
+
+
+```{r}
+alldata |> 
+  select(experiment, replicate,
+         t_anox, t_peak,
+         ar_loss_rate, dn_rate_o2_min,
+         dn_rate_o2_min_ar_cor,
+         dn_rate_max) |> 
+  mutate(t_anox = t_anox/3600,
+         t_peak = t_peak/3600) |> 
+knitr::kable(digits = c(1, 1, 1, 1, 0, 0, 0, 0),
+             col.names = c("Experiment", "Replicate",
+                           "Time to Anoxia [h]", "Time to Peak [h]",
+                           "Ar loss [umol/d]", "DN Rate (O2 min) [umol/d]",
+                           "DN Rate (O2 min Ar cor)", "DN Rate (max) [umol/d]"))
 ```
 
 # Summary plots
 
 ```{r}
-init <- ggplot(nested_data, aes(experiment, dn_rate_o2_min_ar_cor)) +
+init <- ggplot(alldata, aes(experiment, dn_rate_o2_min_ar_cor)) +
   geom_boxplot() +
   labs(title = "DN rate at O2 min (Ar corrected)",
        y = "15N2 production [umol/day]") +
   theme(axis.title.x = element_blank(),  # Remove x-axis title
     axis.text.x = element_blank())
 
-ar <- ggplot(nested_data, aes(experiment, -ar_loss_rate)) +
+ar <- ggplot(alldata, aes(experiment, -ar_loss_rate)) +
   geom_boxplot() +
   ylab("Ar loss rate [umol/day]")
 
-ox <- ggplot(nested_data, aes(experiment, t_anox)) +
+ox <- ggplot(alldata, aes(experiment, t_anox)) +
   geom_boxplot() +
   ylab("Elapsed Time to anoxia")
 
@@ -233,26 +293,26 @@ init / ar / ox
 # summary ANOVA
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ experiment, data = nested_data)
+a <- aov(dn_rate_o2_min_ar_cor ~ experiment, data = alldata)
 summary(a)
 ```
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ grass + open, data = nested_data)
+a <- aov(dn_rate_o2_min_ar_cor ~ grass + open, data = alldata)
 summary(a)
 ```
 
 Grass vs no grass
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ grass, data = nested_data)
+a <- aov(dn_rate_o2_min_ar_cor ~ grass, data = alldata)
 summary(a)
 ```
 
 between replicates
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ replicate, data = nested_data)
+a <- aov(dn_rate_o2_min_ar_cor ~ replicate, data = alldata)
 summary(a)
 ```
 
@@ -272,128 +332,6 @@ Chamber label experiment in sed-only, closed sided crate.
 * Started pump, purge bubbles. Large initial bubble below screen.
 * Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
 * Power outage
-
-```{r}
-label_start <-  as.POSIXct("2024-08-19 15:30:00")
-
-df <- read_gems("data/GEMS_tests/SerialCapture/GEMS_2024-08-19_chamber_sed_closed.txt") |> 
-  mutate(timestamp = ifelse(timestamp > "2024-08-18",
-                            timestamp,
-                            timestamp + 177775450),
-         timestamp = as.POSIXct(timestamp),
-         experiment = case_when(timestamp < label_start ~ "control",
-                                TRUE ~ "label"))
-```
-
-Calculate slope and rate using Scott's method.
-
-Give each measurement loop an average timestamp and pivot to wide format.
-
-```{r}
-df_wide <- rga_wider(df)
-```
-
-Plot to find rough background values (should do this programmatically)
-
-```{r}
-plot_wide(df_wide) 
-```
-
-Backgrounds from plot
-
-```{r}
-bg_29 <- 7.4E-12
-bg_30 <- 2.1E-12
-```
-
-Normalized partial pressures and molar concentrations
-
-```{r}
-df_proc <- norm_rga(df_wide, 
-                    bg_29, bg_30, bg_40, 
-                    nit_sat_umol = nit_sat_umol, 
-                    ar_sat_umol = ar_sat_umol, 
-                    t0 = label_start)
-```
-
-time of oxygen minimum
-
-```{r}
-df_proc %>% 
-  select(et, mass_32) %>% 
-  dygraph()
-```
-
-Nitrogen normalized argon. Use slope to calculate diffusive loss.
-
-```{r}
-df_proc %>% 
-  select(et, mass_40_28) %>% 
-  filter(mass_40_28 < 0.1) %>% 
-  dygraph()
-```
-
-Argon concentration. Use slope to calculate diffusive loss.
-
-```{r}
-df_proc %>% 
-  filter(mass_40_28 < 0.1) %>% 
-  select(et, umol_40) %>% 
-  dygraph()
-```
-
-```{r}
-ar <- df_proc %>% 
-  select(et, umol_40) %>% 
-  filter(et > 9000,
-         et < 11000)
-
-rate_sum$argon[1] <- coef(lm(umol_40 ~ et, data = ar))[2] * 3600 * 24
-```
-
-Ar loss rates are normalized to N2, but uncalibrated for now.
-
-Ar loss rate: `r ar_loss_rate_sed_closed`
-
-```{r}
-df_proc %>% 
-  mutate(mass_29_28 = mass_29/mass_28,
-         mass_30_28 = mass_30/mass_28) |> 
-  select(et, mass_29_28, mass_30_28) %>% 
-  dygraph()
-```
-
-```{r}
-df_proc %>% 
-  select(et, umol_30) %>% 
-  dygraph()
-```
-
-Use least-squares linear regression to get slope of mass 30 production
-
-```{r}
-umol_30_rate_sed_closed_init <- calc_rate(df_proc, c(9000, 11000))
-```
-
-Initial rate of mass 30 production: `r umol_30_rate_sed_closed_init` umol/day.
-
-50% ar rate
-
-```{r}
-umol_30_rate_sed_closed_50 <- calc_rate(df_proc, c(7400, 15000))
-```
-
-max rate
-
-```{r}
-umol_30_rate_sed_closed_max <- calc_rate(df_proc, c(70000, 72000))
-```
-
-avg rate
-
-```{r}
-umol_30_rate_sed_closed_avg <- calc_rate(df_proc, c(0, 72000))
-```
 
 ## 2024-08-20 chamber sed open sided
 
@@ -477,294 +415,3 @@ Chamber label experiment in grass, open sided crate.
 * Installed chamber. Sed-surface 10cm, chamber-surface 6cm.
 * Started pump, purge bubbles.
 * Inject 5ml of argon-saturated 20 mmol/L 15NO3- solution.
-
-# Rate summary
-
-argon is nitrogen-normalized unitless argon loss per day
-
-nitrogen is umol 15N2 production per day
-
-```{r}
-rate_sum <- tibble(experiment = as.factor(c("sed-closed", "sed-open", "grass-closed", "grass-open", "sed-closed", "sed-open", "grass-closed", "grass-open", "sed-closed", "sed-open", "grass-closed", "grass-open")),
-                   replicate = as.factor(c(1,1,1,1,2,2,2,2,3,3,3,3)),
-                   t_anox = c(10000, 12000,7000, 14000, 28000, 17000, 6000, 8000, 15000, 12000, 7000, 8000)/3600,
-                   t_peak = c(72000, 41000, 29000, 44000, 92000, 65000, 47000, 41000, 48000, 57000, 32000, 37000)/3600,
-                   grass = c(FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, TRUE, FALSE), 
-                   open = c(FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE),
-                   )
-
-knitr::kable(rate_sum, digits = c(1, 1, 3, 1, 1, 0, 0, 0, 0, 1, 1), col.names = c("Experiment", "Replicate", "Ar loss", "Time to Peak", "Time to Anoxia", "Initial DN", "DN to 50% Ar", "Avg DN", "Max DN", "Grass", "Open sided"))
-```
-
-```{r}
-init <- ggplot(rate_sum, aes(experiment, dn_init, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Initial DN rate",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank(),
-    axis.title.y = element_blank())
-
-avg <- ggplot(rate_sum, aes(experiment, dn_avg, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Average DN rate",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-max <- ggplot(rate_sum, aes(experiment, dn_max, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Maximum DN rate",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.y = element_blank())
-
-ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  ylab("Ar loss rate")
-
-init / avg / max / ar
-```
-
-Initial attempt at correction for Ar loss
-
-If Ar loss is dimensionless, but linear, can we correct by ratio of loss
-to the least loss? ie, sed closed is no correction, others corrected
-by factor to sed closed.
-
-```{r}
-rate_sum <- rate_sum %>% 
-  mutate(ar_factor = argon / rate_sum$argon[[1]],
-         dn_init_cor = dn_init * ar_factor,
-         dn_50_cor = dn_50 * ar_factor,
-         dn_avg_cor = dn_avg * ar_factor,
-         dn_max_cor = dn_max * ar_factor)
-```
-
-
-```{r}
-init <- ggplot(rate_sum, aes(experiment, dn_init_cor, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "DN rate at O2 min (Ar corrected)",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  ylab("Ar loss rate")
-
-init / ar
-```
-
-```{r}
-init <- ggplot(rate_sum, aes(experiment, dn_init_cor, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "DN rate at O2 min (Ar corrected)",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  ylab("Ar loss rate")
-
-ox <- ggplot(rate_sum, aes(experiment, t_anox, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  ylab("Time to anoxia")
-
-init / ar / ox
-```
-
-```{r}
-init <- ggplot(rate_sum, aes(experiment, dn_init_cor)) +
-  geom_boxplot() +
-  labs(title = "DN rate at O2 min (Ar corrected)",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-ar <- ggplot(rate_sum, aes(experiment, -argon)) +
-  geom_boxplot() +
-  ylab("Ar loss rate")
-
-ox <- ggplot(rate_sum, aes(experiment, t_anox)) +
-  geom_boxplot() +
-  ylab("Time to anoxia")
-
-init / ar / ox
-```
-
-Grass vs sed only
-
-```{r}
-init <- ggplot(rate_sum, aes(grass, dn_init_cor)) +
-  geom_boxplot() +
-  labs(title = "DN rate at O2 min (Ar corrected)",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-ar <- ggplot(rate_sum, aes(grass, -argon)) +
-  geom_boxplot() +
-  ylab("Ar loss rate")
-
-ox <- ggplot(rate_sum, aes(grass, t_anox)) +
-  geom_boxplot() +
-  ylab("Time to anoxia")
-
-init / ar / ox
-```
-
-
-```{r}
-init <- ggplot(rate_sum, aes(experiment, dn_init_cor, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Initial DN rate",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank(),
-    axis.title.y = element_blank())
-
-dn50 <- ggplot(rate_sum, aes(experiment, dn_50_cor, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "DN rate to 50% Ar",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank(),
-    axis.title.y = element_blank())
-
-avg <- ggplot(rate_sum, aes(experiment, dn_avg_cor, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Average DN rate",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-max <- ggplot(rate_sum, aes(experiment, dn_max_cor, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Maximum DN rate",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.y = element_blank())
-
-ar <- ggplot(rate_sum, aes(experiment, -argon, fill = replicate)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  ylab("Ar loss rate")
-
-init / dn50 / avg / max / ar
-```
-```{r}
-rate_sum %>% 
-  select(experiment, dn_init, dn_init_cor) %>% 
-  pivot_longer(c(dn_init, dn_init_cor)) %>% 
-  ggplot(aes(experiment, value, fill = name)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Initial DN rate",
-       subtitle = "With/without Argon correction",
-       y = "15N2 production (umol/day)")
-```
-
-initial rates from start to 50% argon loss
-
-Uncorrected rates
-
-```{r}
-rate_sum %>% 
-  select(experiment, dn_init, dn_50) %>% 
-  pivot_longer(c(dn_init, dn_50)) %>% 
-  ggplot(aes(experiment, value, fill = name)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Initial DN rate",
-       subtitle = "Initial 'even' slope and rate from t0 to 50% Ar loss",
-       y = "15N2 production (umol/day)")
-
-```
-
-Ar loss corrected
-
-```{r}
-rate_sum %>% 
-  select(experiment, dn_init_cor, dn_50_cor) %>% 
-  pivot_longer(c(dn_init_cor, dn_50_cor)) %>% 
-  ggplot(aes(experiment, value, fill = name)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  labs(title = "Ar Loss Corrected Initial DN rate",
-       subtitle = "Initial 'even' slope and rate from t0 to 50% Ar loss",
-       y = "15N2 production (umol/day)")
-
-```
-
-ANOVA
-
-```{r}
-a <- aov(dn_init_cor ~ experiment, data = rate_sum)
-summary(a)
-```
-
-```{r}
-a <- aov(dn_init_cor ~ grass + open, data = rate_sum)
-summary(a)
-```
-
-Grass vs no grass
-
-```{r}
-a <- aov(dn_init_cor ~ grass, data = rate_sum)
-summary(a)
-```
-
-between replicates
-
-```{r}
-a <- aov(dn_init_cor ~ replicate, data = rate_sum)
-summary(a)
-```
-
-
-Normalize results to a range of 0-1 by replicate 
-to remove effect of overall higher rate in final replicate
-
-```{r}
-scale_rate <- function(rate) {
-  (rate - min(rate))/(max(rate) - min(rate))
-}
-
-rate_sum <- rate_sum %>% 
-  group_by(replicate) %>% 
-  mutate(norm_rate = scale_rate(dn_init_cor))
-```
-
-```{r}
-a <- aov(norm_rate ~ experiment, data = rate_sum)
-summary(a)
-```
-
-```{r}
-a <- aov(norm_rate ~ grass + open, data = rate_sum)
-summary(a)
-```
-
-Grass vs no grass
-
-```{r}
-a <- aov(norm_rate ~ grass, data = rate_sum)
-summary(a)
-```
-
-```{r}
-init <- ggplot(rate_sum, aes(experiment, norm_rate)) +
-  geom_boxplot() +
-  labs(title = "DN rate at O2 min (Ar corrected)",
-       y = "15N2 production (umol/day)") +
-  theme(axis.title.x = element_blank(),  # Remove x-axis title
-    axis.text.x = element_blank())
-
-ar <- ggplot(rate_sum, aes(experiment, -argon)) +
-  geom_boxplot() +
-  ylab("Ar loss rate")
-
-ox <- ggplot(rate_sum, aes(experiment, t_anox)) +
-  geom_boxplot() +
-  ylab("Time to anoxia")
-
-init / ar / ox
-```
