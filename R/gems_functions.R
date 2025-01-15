@@ -106,7 +106,7 @@ calc_rate <- function(df, et_center){
     filter(et > et_center - 1000,
            et < et_center + 1000)
   
-  coef(lm(sdf[[2]] ~ sdf[[1]]))[2] * 3600 * 24
+  coef(lm(sdf[[2]] ~ sdf[[1]]))[2] * 3600
 }
 
 rga_wider <- function(df) {

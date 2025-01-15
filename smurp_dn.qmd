@@ -42,6 +42,10 @@ frac_abd_15 <- 0.00367
 frac_abd_14 <- 1 - frac_abd_15
 nit_sat_umol <- cal_n2_sat(sal = lab_sal, temp = lab_temp) # calculate for lab temp, sal, and pressure
 ar_sat_umol <- cal_ar_sat(sal = lab_sal, temp = lab_temp)
+
+# Chamber area
+dia <- 0.09
+area <- pi * (dia / 2)^2
 ```
 
 ### Files, times, treatments, backgrounds
@@ -55,6 +59,46 @@ files <- list.files("data",
 
 experiment <- str_extract(files, "[^_]+_[^_]+(?=\\.txt$)")
 
+metadata <- tibble(datafile = files,
+                        experiment = as.factor(experiment),
+                        replicate = as.factor(rep(1:3, each = 4)),
+                        grass = grepl("grass", experiment), 
+                        open = grepl("open", experiment),
+)
+```
+
+# Initial plots for metadata
+
+Plot raw and normalized data to find 
+t0, t_anox, t_peak,
+bg_29, bg_30, bg_40_28
+
+## Read all files and produce plots
+
+```{r}
+read_all_gems <- function(file) {
+  df <- read_gems(file)
+  df_wide <- rga_wider(df)
+  df_ratios <- rga_ratios(df_wide)
+}
+
+alldata_wide <- metadata |> 
+  mutate(data_wide = map(datafile, read_all_gems))
+```
+
+General plots for mass 29 and 30 background
+
+```{r}
+pmap(list(alldata_wide$data_wide, 
+          paste(alldata_wide$experiment, 
+                alldata_wide$replicate, sep = "-")), 
+     plot_wide)
+
+```
+
+Record t0, bg_29, bg_30
+
+```{r}
 t0 <- as.POSIXct(c("2024-08-19 15:30:00",
                    "2024-08-20 15:47:00",
                    "2024-08-21 15:15:00",
@@ -94,63 +138,6 @@ bg_30 <- c(2.1E-12,
            4.7E-12, 
            4.7E-12)
 
-bg_40_28 <- c(0.036,
-              0.041,
-              0.032,
-              0.039,
-              0.038,
-              0.038,
-              0.038,
-              0.039,
-              0.040,
-              0.040,
-              0.040,
-              0.039)
-
-metadata <- tibble(datafile = files,
-                        experiment = as.factor(experiment),
-                        replicate = as.factor(rep(1:3, each = 4)),
-                        grass = grepl("grass", experiment), 
-                        open = grepl("open", experiment),
-                        t_0 = t0,
-                        bg_29 = bg_29,
-                        bg_30 = bg_30,
-                        bg_40_28 = bg_40_28,
-                        t_anox = c(20000, 12000, 16000, 7000, 
-                                   28000, 17000, 6000, 8000, 
-                                   15000, 12000, 7000, 8000),
-                        t_peak = c(72000, 41000, 44000, 23000, 
-                                   92000, 65000, 47000, 41000, 
-                                   48000, 57000, 32000, 37000),
-)
-```
-
-# Initial plots for metadata
-
-Plot raw and normalized data to find 
-t0, t_anox, t_peak,
-bg_29, bg_30, bg_40_28
-
-## Read all files and produce plots
-
-```{r}
-read_all_gems <- function(file) {
-  df <- read_gems(file)
-  df_wide <- rga_wider(df)
-  df_ratios <- rga_ratios(df_wide)
-}
-
-alldata_wide <- metadata |> 
-  mutate(data_wide = map(datafile, read_all_gems))
-```
-
-General plots for mass 29 and 30 background
-
-```{r}
-pmap(list(alldata_wide$data_wide, 
-          paste(alldata_wide$experiment, 
-                alldata_wide$replicate, sep = "-")), 
-     plot_wide)
 ```
 
 Argon-Nitrogen ratio plot for Ar/N2 background
@@ -171,6 +158,33 @@ pmap(list(alldata_wide$data_wide,
      plot_ar)
 ```
 
+Record Ar background
+
+```{r}
+bg_40_28 <- c(0.036,
+              0.041,
+              0.032,
+              0.039,
+              0.038,
+              0.038,
+              0.038,
+              0.039,
+              0.040,
+              0.040,
+              0.040,
+              0.039)
+```
+
+add times and backgrounds to data
+
+```{r}
+alldata_wide <- alldata_wide |> 
+  mutate(t0 = t0,
+         bg_29 = bg_29,
+         bg_30 = bg_30,
+         bg_40_28 = bg_40_28)
+```
+
 ## Calculate molarities
 
 ```{r}
@@ -188,13 +202,21 @@ plot_o2 <- function(df, title) {
     select(et, mass_32) %>% 
     dygraph(main = title) %>% 
     dyOptions(logscale = TRUE,
-              digitsAfterDecimal = 4)
+              digitsAfterDecimal = 0)
 }
 
 pmap(list(alldata_norm$data_norm, 
           paste(alldata_norm$experiment, 
                 alldata_norm$replicate, sep = "-")), 
      plot_o2)
+```
+
+Record O2 min time
+
+```{r}
+t_anox = c(20000, 12000, 16000, 7000, 
+           28000, 17000, 6000, 8000, 
+           15000, 12000, 7000, 8000)
 ```
 
 ## max DN
@@ -212,6 +234,22 @@ pmap(list(alldata_norm$data_norm,
      plot_30)
 ```
 
+Record peak DN times
+
+```{r}
+t_peak = c(72000, 41000, 44000, 23000, 
+           92000, 65000, 47000, 41000, 
+           48000, 57000, 32000, 37000)
+```
+
+add times to data
+
+```{r}
+alldata_norm <- alldata_norm |> 
+  mutate(t_anox = t_anox,
+         t_peak = t_peak)
+```
+
 ## Calculate final rates
 
 ### Ar loss rates
@@ -223,12 +261,18 @@ calc_ar_loss_rate <- function(df, t_o2_min) {
     filter(et > t_o2_min - 1000,
            et < t_o2_min + 1000)
   
-  coef(lm(umol_40 ~ et, data = ar))[2] * 3600 * 24
+  coef(lm(umol_40 ~ et, data = ar))[2] * 3600
 }
 
 alldata_ar <- alldata_norm |> 
-  mutate(ar_loss_rate = pmap_dbl(list(data_norm, t_anox),
-                             calc_ar_loss_rate))
+  mutate(ar_loss_init = pmap_dbl(list(data_norm, 10000),
+                             calc_ar_loss_rate),
+         ar_loss_20 = pmap_dbl(list(data_norm, .2 * t_peak),
+                             calc_ar_loss_rate),
+         ar_loss_anox = pmap_dbl(list(data_norm, t_anox),
+                             calc_ar_loss_rate),
+         ar_loss_max = pmap_dbl(list(data_norm, t_peak - 1000),
+                             calc_ar_loss_rate),)
 ```
 
 ### DN Rates
@@ -237,17 +281,31 @@ DN rate at O2 minimum and max mass 30
 
 ```{r}
 alldata_dn <- alldata_ar |> 
-  mutate(dn_rate_max = pmap_dbl(list(data_norm, t_peak - 1000),
+  mutate(dn_init = pmap_dbl(list(data_norm, 10000),
                                 calc_rate),
-         dn_rate_o2_min = pmap_dbl(list(data_norm, t_anox),
+         dn_20 = pmap_dbl(list(data_norm, .2 * t_peak),
+                             calc_rate),
+         dn_anox = pmap_dbl(list(data_norm, t_anox),
+                                calc_rate),
+         dn_max = pmap_dbl(list(data_norm, t_peak - 1000),
                                    calc_rate))
 ```
 
-Ar loss corrected rate
+Ar loss corrected rates
 
 ```{r}
 alldata <- alldata_dn |> 
-  mutate(dn_rate_o2_min_ar_cor = dn_rate_o2_min - ar_loss_rate)
+  mutate(dn_init_ar_cor = dn_init - ar_loss_init,
+        dn_20_ar_cor = dn_20 - ar_loss_20,
+        dn_anox_ar_cor = dn_anox - ar_loss_anox,
+        dn_max_ar_cor = dn_max - ar_loss_max)
+```
+
+Scale rates to umol m-2 d-1
+
+```{r}
+alldata <- alldata |> 
+  mutate(across(starts_with("dn_"), \(x) x / area))
 ```
 
 # Summary table
@@ -257,62 +315,74 @@ alldata <- alldata_dn |>
 alldata |> 
   select(experiment, replicate,
          t_anox, t_peak,
-         ar_loss_rate, dn_rate_o2_min,
-         dn_rate_o2_min_ar_cor,
-         dn_rate_max) |> 
+         dn_init_ar_cor,
+         dn_20_ar_cor,
+         dn_anox_ar_cor) |> 
   mutate(t_anox = t_anox/3600,
          t_peak = t_peak/3600) |> 
-knitr::kable(digits = c(1, 1, 1, 1, 0, 0, 0, 0),
+knitr::kable(digits = c(1, 1, 1, 1, 0, 0, 0),
              col.names = c("Experiment", "Replicate",
                            "Time to Anoxia [h]", "Time to Peak [h]",
-                           "Ar loss [umol/d]", "DN Rate (O2 min) [umol/d]",
-                           "DN Rate (O2 min Ar cor)", "DN Rate (max) [umol/d]"))
+                           "DN Rate (initial) [umol/m2/h]", 
+                           "DN Rate (20% max) [umol/m2/h]",
+                           "DN Rate (O2 min) [umol/m2/h]"))
 ```
 
 # Summary plots
 
 ```{r}
-init <- ggplot(alldata, aes(experiment, dn_rate_o2_min_ar_cor)) +
+init <- ggplot(alldata, aes(experiment, dn_init_ar_cor)) +
   geom_boxplot() +
-  labs(title = "DN rate at O2 min (Ar corrected)",
-       y = "15N2 production [umol/day]") +
+  labs(title = "Initial DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
   theme(axis.title.x = element_blank(),  # Remove x-axis title
     axis.text.x = element_blank())
 
-ar <- ggplot(alldata, aes(experiment, -ar_loss_rate)) +
+tw <- ggplot(alldata, aes(experiment, dn_20_ar_cor)) +
   geom_boxplot() +
-  ylab("Ar loss rate [umol/day]")
+  labs(title = "DN rate at 20% max (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
 
-ox <- ggplot(alldata, aes(experiment, t_anox)) +
+ox <- ggplot(alldata, aes(experiment, dn_anox_ar_cor)) +
   geom_boxplot() +
-  ylab("Elapsed Time to anoxia")
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
 
-init / ar / ox
+max <- ggplot(alldata, aes(experiment, dn_max_ar_cor)) +
+  geom_boxplot() +
+  labs(title = "Max DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]")
+
+init / tw / ox / max + plot_layout(axis_titles = "collect")
 ```
 
 # summary ANOVA
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ experiment, data = alldata)
+a <- aov(dn_anox_ar_cor ~ experiment, data = alldata)
 summary(a)
 ```
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ grass + open, data = alldata)
+a <- aov(dn_anox_ar_cor  ~ grass + open, data = alldata)
 summary(a)
 ```
 
 Grass vs no grass
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ grass, data = alldata)
+a <- aov(dn_anox_ar_cor ~ grass, data = alldata)
 summary(a)
 ```
 
 between replicates
 
 ```{r}
-a <- aov(dn_rate_o2_min_ar_cor ~ replicate, data = alldata)
+a <- aov(dn_anox_ar_cor ~ replicate, data = alldata)
 summary(a)
 ```
 
