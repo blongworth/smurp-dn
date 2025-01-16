@@ -72,43 +72,45 @@ cal_ar_sat <- function(sal, temp) {
   exp(lnC)
 }
 
-process_gems <- function(df, bg_et_range, nit_sat_umol) {
-  # get mean timestamps and widen data
-  df_wide <- rga_wider(df)
-  # determine backgrounds
-  df_bg <- df_wide |> 
-    filter(et > bg_et_range[1],
-           et < bg_et_range[2])
-  
-  bg_29 <- df_bg |> 
-    pull(mass_29) |> 
-    mean()
-  
-  bg_30 <- df_bg |> 
-    pull(mass_30) |> 
-    mean()
-  
-  # add ratios and concentrations
-  norm_rga(df_wide, bg_29, bg_30, nit_sat_umol)
-  
+#' Read GEMS data
+#' 
+#' @param filename Path of a file in GEMS format
+#' 
+#' @return A dataframe of GEMS data in long format
+read_gems <- function(filename) {
+  raw_file <- read_lines(filename)
+  gems_raw <- raw_file[str_starts(raw_file, "(R:)*\\d+,")]
+  gems_data <- str_remove(gems_raw, "^R:")
+  read_csv(I(gems_data),
+           col_names = c("hour", "min", "sec", "month", 
+                         "day", "year", "mass", "current"),
+           col_types = list(
+             hour = col_integer(),
+             min = col_integer(),
+             sec = col_integer(),
+             month = col_integer(),
+             day = col_integer(),
+             year = col_integer(),
+             mass = col_integer(),
+             current = col_double())) |> 
+    mutate(mass = as.factor(mass),
+           current = current*1E-16,
+           pressure = current/0.0801,
+           timestamp = lubridate::make_datetime(year, month, day, hour, min, sec, 
+                                                tz = "America/New_York")) |> 
+    # hack for bad first file
+    mutate(timestamp = ifelse(timestamp > "2024-08-18",
+                              timestamp,
+                              timestamp + 177775450),
+         timestamp = as.POSIXct(timestamp)) |> 
+    select(timestamp, mass, current, pressure)
 }
 
-#' Calculate rate based on slope of linear fit
-#'
-#' @param df a dataframe with 2 columns: elapsed time (sec) and the measurement of interest
-#' @param et_range 2 element vector with the range of elapsed times to calculate rate over
-#'
-#' @return A rate in units of measurement per day
-#' @export
-calc_rate <- function(df, et_center){
-  sdf <- df %>% 
-    select(et, umol_30) %>% 
-    filter(et > et_center - 1000,
-           et < et_center + 1000)
-  
-  coef(lm(sdf[[2]] ~ sdf[[1]]))[2] * 3600
-}
-
+#' Pivot RGA data to wide format with a timestamp for each cycle
+#' 
+#' @param df A dataframe of RGA data in long format
+#' 
+#' @return A dataframe of RGA data in wide format
 rga_wider <- function(df) {
   df %>% 
     mutate(cycle = cumsum(mass == 18)) %>% 
@@ -120,6 +122,11 @@ rga_wider <- function(df) {
                 values_from = pressure)
 }
 
+#' Calculate mass ratios to normalize to mass 28
+#' 
+#' @param df A dataframe of RGA data in wide format
+#' 
+#' @return A dataframe of with additional columns for mass ratios
 rga_ratios <- function(df) {
   df %>% 
     mutate(mass_28_18 = mass_28 / mass_18,
@@ -131,7 +138,6 @@ rga_ratios <- function(df) {
            mass_40_28 = mass_40 / mass_28)
 }
 
-# generate roxygen documentation for this function
 #' Normalize RGA data
 #' 
 #' Calculates the molar concentration of N2 and Ar.
@@ -168,35 +174,28 @@ norm_rga <- function(df,
            umol_40 = mass_40_28 * (ar_sat_umol/bg_40_28))
 }
 
-read_gems <- function(filename) {
-  raw_file <- read_lines(filename)
-  gems_raw <- raw_file[str_starts(raw_file, "(R:)*\\d+,")]
-  gems_data <- str_remove(gems_raw, "^R:")
-  read_csv(I(gems_data),
-           col_names = c("hour", "min", "sec", "month", 
-                         "day", "year", "mass", "current"),
-           col_types = list(
-             hour = col_integer(),
-             min = col_integer(),
-             sec = col_integer(),
-             month = col_integer(),
-             day = col_integer(),
-             year = col_integer(),
-             mass = col_integer(),
-             current = col_double())) |> 
-    mutate(mass = as.factor(mass),
-           current = current*1E-16,
-           pressure = current/0.0801,
-           timestamp = lubridate::make_datetime(year, month, day, hour, min, sec, 
-                                                tz = "America/New_York")) |> 
-    # hack for bad first file
-    mutate(timestamp = ifelse(timestamp > "2024-08-18",
-                              timestamp,
-                              timestamp + 177775450),
-         timestamp = as.POSIXct(timestamp)) |> 
-    select(timestamp, mass, current, pressure)
+#' Calculate rate based on slope of linear fit
+#'
+#' @param df a dataframe with 2 columns: elapsed time (sec) and the measurement of interest
+#' @param et_range 2 element vector with the range of elapsed times to calculate rate over
+#'
+#' @return A rate in units of measurement per day
+#' @export
+calc_rate <- function(df, et_center){
+  sdf <- df %>% 
+    select(et, umol_30) %>% 
+    filter(et > et_center - 1000,
+           et < et_center + 1000)
+  
+  coef(lm(sdf[[2]] ~ sdf[[1]]))[2] * 3600
 }
 
+#' Interactive plot of RGA data
+#' 
+#' @param df_wide A dataframe of RGA data in wide format
+#' @param title Title of the plot
+#' 
+#' @return A dygraph object
 plot_wide <- function(df_wide, title = "GEMS Data") {
   df_wide %>% 
     select(timestamp, mass_28, mass_29, mass_30, mass_32, mass_40) %>% 
@@ -205,105 +204,4 @@ plot_wide <- function(df_wide, title = "GEMS Data") {
     dyOptions(logscale = TRUE) |> 
     dyRangeSelector() |>
     dyLegend()
-}
-
-plot_gems <- function(data, log = TRUE) {
-  stopifnot(is.logical(log))
-  p <- data |> 
-    ggplot(aes(timestamp, pressure, color = mass)) +
-    geom_line() +
-    ylab("Pressure (Torr)") +
-    theme(axis.title.x = element_blank())
-  
-  if (log) {
-    p +
-      scale_y_log10()
-  } else {
-    p
-  }
-}
-
-#' Read SRS RGASoft files
-#' 
-#' Old RGA software tabular format. Watch out for missing spaces causing NA's
-#'
-#' @param filename File to read.
-#'
-#' @return A dataframe of RGA data in long format.
-#' @export
-#'
-read_rgasoft <- function(filename) {
-  
-  # get timestamp
-  ts <- read_lines(filename, n_max = 1)[[1]] |> 
-    lubridate::mdy_hms()
-  #masses <- read_table(file)
-  # rowlist <- read_lines(filename, skip = 30, n_max = 1) |> 
-  #   str_split("\\s+") 
-  # column_names <- rowlist[[1]]
-  #read_lines(filename, skip = 32) |> 
-  #  str_replace("(\\d)(-)", "$1 $2") |> 
-  read_csv(filename,
-           col_names = c("time_s", "mass_18", "mass_28", "mass_29", 
-                         "mass_30", "mass_32", "mass_40", "mass_44", 
-                         "mass_45", "mass_46", "X"), 
-           col_types = cols(
-             time_s = col_number(),
-             mass_18 = col_double(),
-             mass_28 = col_double(),
-             mass_29 = col_double(),
-             mass_30 = col_double(),
-             mass_32 = col_double(),
-             mass_40 = col_double(),
-             mass_44 = col_double(),
-             mass_45 = col_double(),
-             mass_46 = col_double(),
-             X = col_logical()
-           ), skip = 32) |> 
-    select(-X) |> 
-    mutate(timestamp = ts + time_s) |> 
-    select(!time_s) |> 
-    pivot_longer(cols = starts_with("mass"),
-                 names_to = "mass",
-                 names_pattern = "mass_(.+)",
-                 values_to = "pressure") |> 
-    mutate(mass = as.factor(mass))
-}
-
-#' Read fixed width RGASoft files
-#'
-#' @param filename 
-#'
-#' @return
-#' @export
-#'
-#' @examples
-read_rgasoft_ascii <- function(filename) {
-  
-  # get timestamp
-  ts <- read_lines(filename, n_max = 1)[[1]] |> 
-    mdy_hms()
-  #masses <- read_table(file)
-  # rowlist <- read_lines(filename, skip = 30, n_max = 1) |> 
-  #   str_split("\\s+") 
-  # column_names <- rowlist[[1]]
-  #read_lines(filename, skip = 32) |> 
-  #  str_replace("(\\d)(-)", "$1 $2") |> 
-  read_table(filename,
-             col_names = c("time_s", "mass_18", "mass_28", "mass_29", "mass_30", "mass_32", "mass_40", "mass_44", "mass_45", "mass_46", "X"), 
-             col_types = cols(
-  time_s = col_number(),
-  mass_18 = col_double(),
-  mass_28 = col_double(),
-  mass_29 = col_double(),
-  mass_30 = col_double(),
-  mass_32 = col_double(),
-  mass_40 = col_double(),
-  mass_44 = col_double(),
-  mass_45 = col_double(),
-  mass_46 = col_double(),
-  X = col_logical()
-), skip = 32) |> 
-    select(-X) |> 
-    mutate(timestamp = ts + time_s)
 }
