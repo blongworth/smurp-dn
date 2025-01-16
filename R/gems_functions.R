@@ -168,13 +168,22 @@ norm_rga <- function(df,
            umol_40 = mass_40_28 * (ar_sat_umol/bg_40_28))
 }
 
-read_gems <- function(file) {
-  raw_file <- read_lines(file)
+read_gems <- function(filename) {
+  raw_file <- read_lines(filename)
   gems_raw <- raw_file[str_starts(raw_file, "(R:)*\\d+,")]
   gems_data <- str_remove(gems_raw, "^R:")
   read_csv(I(gems_data),
            col_names = c("hour", "min", "sec", "month", 
-                         "day", "year", "mass", "current")) |> 
+                         "day", "year", "mass", "current"),
+           col_types = list(
+             hour = col_integer(),
+             min = col_integer(),
+             sec = col_integer(),
+             month = col_integer(),
+             day = col_integer(),
+             year = col_integer(),
+             mass = col_integer(),
+             current = col_double())) |> 
     mutate(mass = as.factor(mass),
            current = current*1E-16,
            pressure = current/0.0801,

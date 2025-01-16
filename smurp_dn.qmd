@@ -6,7 +6,7 @@ format:
 ---
 
 ```{r}
-library(tidyverse)
+library(tidyverse, quietly = TRUE)
 library(dygraphs)
 library(patchwork)
 library(purrr)
@@ -14,7 +14,9 @@ source("R/gems_functions.R")
 theme_set(theme_classic())
 ```
 
-# Metadata
+# Data processing
+
+## Metadata
 
 ### Natural nitrogen abundance and saturation concentration
 
@@ -38,17 +40,21 @@ sat_sens
 ```{r}
 lab_temp = 23
 lab_sal = 31
+
+# isotope partitioning
 frac_abd_15 <- 0.00367
 frac_abd_14 <- 1 - frac_abd_15
-nit_sat_umol <- cal_n2_sat(sal = lab_sal, temp = lab_temp) # calculate for lab temp, sal, and pressure
+
+# nitrogen and argon saturation
+nit_sat_umol <- cal_n2_sat(sal = lab_sal, temp = lab_temp)
 ar_sat_umol <- cal_ar_sat(sal = lab_sal, temp = lab_temp)
 
 # Chamber area
-dia <- 0.09
-area <- pi * (dia / 2)^2
+dia <- 0.09 # m
+area <- pi * (dia / 2)^2 # m2
 ```
 
-### Files, times, treatments, backgrounds
+### Experiment metadata
 
 Times and backgrounds determined by inspection of plots below.
 
@@ -67,13 +73,11 @@ metadata <- tibble(datafile = files,
 )
 ```
 
-# Initial plots for metadata
+### RGA data
 
-Plot raw and normalized data to find 
-t0, t_anox, t_peak,
-bg_29, bg_30, bg_40_28
-
-## Read all files and produce plots
+Add RGA data, pivot to wide format
+with single timestamp per scan
+and add ratios
 
 ```{r}
 read_all_gems <- function(file) {
@@ -86,14 +90,19 @@ alldata_wide <- metadata |>
   mutate(data_wide = map(datafile, read_all_gems))
 ```
 
-General plots for mass 29 and 30 background
+## Backgrounds and timing
+
+Plot raw and normalized data to find 
+t0, t_anox, t_peak,
+bg_29, bg_30, bg_40_28
+
+### Backgrounds, t0
 
 ```{r}
 pmap(list(alldata_wide$data_wide, 
           paste(alldata_wide$experiment, 
                 alldata_wide$replicate, sep = "-")), 
      plot_wide)
-
 ```
 
 Record t0, bg_29, bg_30
@@ -137,7 +146,6 @@ bg_30 <- c(2.1E-12,
            4.7E-12, 
            4.7E-12, 
            4.7E-12)
-
 ```
 
 Argon-Nitrogen ratio plot for Ar/N2 background
@@ -151,11 +159,22 @@ plot_ar <- function(df, title) {
     dyOptions(logscale = TRUE,
               digitsAfterDecimal = 4)
 }
+# use for reporting
+plot_ar_gg <- function(df, title) {
+    df %>% 
+    filter(mass_40_28 < 0.1) |> 
+    ggplot(aes(timestamp, mass_40_28)) + 
+    geom_line() + 
+    ggtitle(title)
+}
 
-pmap(list(alldata_wide$data_wide, 
-          paste(alldata_wide$experiment, 
-                alldata_wide$replicate, sep = "-")), 
-     plot_ar)
+alldata_wide |> 
+  mutate(plots = pmap(list(data_wide, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_ar_gg)) |> 
+  pull(plots) |> 
+  wrap_plots()
 ```
 
 Record Ar background
@@ -185,7 +204,7 @@ alldata_wide <- alldata_wide |>
          bg_40_28 = bg_40_28)
 ```
 
-## Calculate molarities
+### Calculate molarities
 
 ```{r}
 alldata_norm <- alldata_wide |> 
@@ -194,9 +213,11 @@ alldata_norm <- alldata_wide |>
                           norm_rga))
 ```
 
-## Oxygen minimums
+### Time of O2 min and max mass 30
 
 ```{r}
+#| warning: false
+
 plot_o2 <- function(df, title) {
     df %>% 
     select(et, mass_32) %>% 
@@ -205,10 +226,23 @@ plot_o2 <- function(df, title) {
               digitsAfterDecimal = 0)
 }
 
-pmap(list(alldata_norm$data_norm, 
-          paste(alldata_norm$experiment, 
-                alldata_norm$replicate, sep = "-")), 
-     plot_o2)
+# use for reporting
+plot_o2_gg <- function(df, title) {
+    df %>% 
+    ggplot(aes(et/3600, mass_32)) + 
+    xlim(-.5,8) +
+    #ylim(0,100) +
+    geom_line() + 
+    ggtitle(title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_o2_gg)) |> 
+  pull(plots) |> 
+  wrap_plots()
 ```
 
 Record O2 min time
@@ -219,19 +253,35 @@ t_anox = c(20000, 12000, 16000, 7000,
            15000, 12000, 7000, 8000)
 ```
 
-## max DN
+Time of max mass 30
 
 ```{r}
+#| warning: false
+
+# use for zoomable interactive plot
 plot_30 <- function(df, title) {
     df %>% 
     select(et, umol_30) %>% 
     dygraph(main = title)
 }
 
-pmap(list(alldata_norm$data_norm, 
-          paste(alldata_norm$experiment, 
-                alldata_norm$replicate, sep = "-")), 
-     plot_30)
+# use for reporting
+plot_30_gg <- function(df, title) {
+    df %>% 
+    ggplot(aes(et/3600, umol_30)) + 
+    xlim(-.5,21) +
+    ylim(0,100) +
+    geom_line() + 
+    ggtitle(title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_30_gg)) |> 
+  pull(plots) |> 
+  wrap_plots()
 ```
 
 Record peak DN times
@@ -305,11 +355,12 @@ Scale rates to umol m-2 d-1
 
 ```{r}
 alldata <- alldata |> 
-  mutate(across(starts_with("dn_"), \(x) x / area))
+  mutate(across(starts_with(c("dn_", "ar_")), \(x) x / area))
 ```
 
-# Summary table
+# Analysis
 
+## Summary table
 
 ```{r}
 alldata |> 
@@ -328,7 +379,7 @@ knitr::kable(digits = c(1, 1, 1, 1, 0, 0, 0),
                            "DN Rate (O2 min) [umol/m2/h]"))
 ```
 
-# Summary plots
+## Summary plots
 
 ```{r}
 init <- ggplot(alldata, aes(experiment, dn_init_ar_cor)) +
@@ -360,7 +411,7 @@ max <- ggplot(alldata, aes(experiment, dn_max_ar_cor)) +
 init / tw / ox / max + plot_layout(axis_titles = "collect")
 ```
 
-# summary ANOVA
+## summary ANOVA
 
 ```{r}
 a <- aov(dn_anox_ar_cor ~ experiment, data = alldata)
