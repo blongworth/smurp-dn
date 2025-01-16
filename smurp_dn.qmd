@@ -6,7 +6,8 @@ format:
 ---
 
 ```{r}
-library(tidyverse, quietly = TRUE)
+#| warning: false
+library(tidyverse)
 library(dygraphs)
 library(patchwork)
 library(purrr)
@@ -99,6 +100,7 @@ bg_29, bg_30, bg_40_28
 ### Backgrounds, t0
 
 ```{r}
+#| eval: false
 pmap(list(alldata_wide$data_wide, 
           paste(alldata_wide$experiment, 
                 alldata_wide$replicate, sep = "-")), 
@@ -114,7 +116,7 @@ t0 <- as.POSIXct(c("2024-08-19 15:30:00",
                    "2024-08-22 13:14:00",
                    "2024-09-11 13:33:00",
                    "2024-09-12 16:30:00",
-                   "2024-09-13 12:34:00",
+                    "2024-09-13 12:34:00",
                    "2024-09-16 14:04:00",
                    "2024-09-24 13:27:00",
                    "2024-09-25 11:24:00",
@@ -151,6 +153,7 @@ bg_30 <- c(2.1E-12,
 Argon-Nitrogen ratio plot for Ar/N2 background
 
 ```{r}
+#| eval: false
 plot_ar <- function(df, title) {
     df %>% 
     select(timestamp, mass_40_28) %>% 
@@ -159,22 +162,13 @@ plot_ar <- function(df, title) {
     dyOptions(logscale = TRUE,
               digitsAfterDecimal = 4)
 }
-# use for reporting
-plot_ar_gg <- function(df, title) {
-    df %>% 
-    filter(mass_40_28 < 0.1) |> 
-    ggplot(aes(timestamp, mass_40_28)) + 
-    geom_line() + 
-    ggtitle(title)
-}
 
 alldata_wide |> 
   mutate(plots = pmap(list(data_wide, 
                            paste(experiment, 
                                  replicate, sep = "-")), 
-                      plot_ar_gg)) |> 
-  pull(plots) |> 
-  wrap_plots()
+                      plot_ar)) |> 
+  pull(plots)
 ```
 
 Record Ar background
@@ -216,7 +210,7 @@ alldata_norm <- alldata_wide |>
 ### Time of O2 min and max mass 30
 
 ```{r}
-#| warning: false
+#| eval: false
 
 plot_o2 <- function(df, title) {
     df %>% 
@@ -226,23 +220,12 @@ plot_o2 <- function(df, title) {
               digitsAfterDecimal = 0)
 }
 
-# use for reporting
-plot_o2_gg <- function(df, title) {
-    df %>% 
-    ggplot(aes(et/3600, mass_32)) + 
-    xlim(-.5,8) +
-    #ylim(0,100) +
-    geom_line() + 
-    ggtitle(title)
-}
-
 alldata_norm |> 
   mutate(plots = pmap(list(data_norm, 
                            paste(experiment, 
                                  replicate, sep = "-")), 
-                      plot_o2_gg)) |> 
-  pull(plots) |> 
-  wrap_plots()
+                      plot_o2)) |> 
+  pull(plots)
 ```
 
 Record O2 min time
@@ -256,7 +239,7 @@ t_anox = c(20000, 12000, 16000, 7000,
 Time of max mass 30
 
 ```{r}
-#| warning: false
+#| eval: false
 
 # use for zoomable interactive plot
 plot_30 <- function(df, title) {
@@ -265,23 +248,12 @@ plot_30 <- function(df, title) {
     dygraph(main = title)
 }
 
-# use for reporting
-plot_30_gg <- function(df, title) {
-    df %>% 
-    ggplot(aes(et/3600, umol_30)) + 
-    xlim(-.5,21) +
-    ylim(0,100) +
-    geom_line() + 
-    ggtitle(title)
-}
-
 alldata_norm |> 
   mutate(plots = pmap(list(data_norm, 
                            paste(experiment, 
                                  replicate, sep = "-")), 
-                      plot_30_gg)) |> 
-  pull(plots) |> 
-  wrap_plots()
+                      plot_30)) |> 
+  pull(plots)
 ```
 
 Record peak DN times
@@ -435,6 +407,75 @@ between replicates
 ```{r}
 a <- aov(dn_anox_ar_cor ~ replicate, data = alldata)
 summary(a)
+```
+
+## Timeseries plots
+
+### Argon
+
+```{r}
+#| warning: false
+plot_ar_gg <- function(df, title) {
+    df %>% 
+    filter(mass_40_28 < 0.1) |> 
+    ggplot(aes(et/3600, mass_40_28)) + 
+    geom_line() + 
+    ylim(0.02, 0.1) +
+    xlim(-.5, 20) +
+    ggtitle(title)
+}
+
+alldata |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_ar_gg)) |> 
+  pull(plots) |> 
+  wrap_plots() + plot_layout(axis_titles = "collect")
+```
+
+### Oxygen
+
+```{r}
+#| warning: false
+plot_o2_gg <- function(df, title) {
+    df %>% 
+    ggplot(aes(et/3600, mass_32)) + 
+    xlim(-.5,8) +
+    ylim(0,4e-10) +
+    geom_line() + 
+    ggtitle(title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_o2_gg)) |> 
+  pull(plots) |> 
+  wrap_plots() + plot_layout(axis_titles = "collect")
+```
+
+### Nitrogen
+
+```{r}
+#| warning: false
+plot_30_gg <- function(df, title) {
+    df %>% 
+    ggplot(aes(et/3600, umol_30)) + 
+    xlim(-.5,21) +
+    ylim(0,100) +
+    geom_line() + 
+    ggtitle(title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_30_gg)) |> 
+  pull(plots) |> 
+  wrap_plots() + plot_layout(axis_titles = "collect")
 ```
 
 # Chamber experiment descriptions
