@@ -330,6 +330,14 @@ alldata <- alldata |>
   mutate(across(starts_with(c("dn_", "ar_")), \(x) x / area))
 ```
 
+## Write summary table to CSV
+
+```{r}
+alldata |> 
+  select(-c(data_norm, data_wide)) |> 
+  write_csv("SMURP_chamber_summary_data.csv")
+```
+
 # Analysis
 
 ## Summary table
@@ -383,6 +391,33 @@ max <- ggplot(alldata, aes(experiment, dn_max_ar_cor)) +
 init / tw / ox / max + plot_layout(axis_titles = "collect")
 ```
 
+same, no max
+
+```{r}
+init <- ggplot(alldata, aes(experiment, dn_init_ar_cor)) +
+  geom_boxplot() +
+  labs(title = "Initial DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+tw <- ggplot(alldata, aes(experiment, dn_20_ar_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at 20% max (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ox <- ggplot(alldata, aes(experiment, dn_anox_ar_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank())
+
+init / tw / ox + plot_layout(axis_titles = "collect")
+```
+
+
 ## summary ANOVA
 
 ```{r}
@@ -410,6 +445,34 @@ summary(a)
 ```
 
 ## Timeseries plots
+
+### All species
+
+```{r}
+alldata |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_rga)) |> 
+  pull(plots) |> 
+  wrap_plots() + plot_layout(axis_titles = "collect")
+```
+
+Representative plot: Grass Open 2
+
+```{r}
+df <- alldata |> 
+  filter(experiment == "grass_open",
+         replicate == 2) |> 
+  pull(data_norm) 
+
+df[[1]] |> 
+  plot_rga_conc() +
+  labs(title = "Concentration over time",
+       subtitle = "Open sided grass SMURP, replicate 2")
+```
+
+
 
 ### Argon
 

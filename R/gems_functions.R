@@ -205,3 +205,42 @@ plot_wide <- function(df_wide, title = "GEMS Data") {
     dyRangeSelector() |>
     dyLegend()
 }
+
+#' plot of RGA data
+#' 
+#' @param df_wide A dataframe of RGA data in wide format
+#' @param title Title of the plot
+#' 
+#' @return A dygraph object
+plot_rga <- function(df_wide, title = "GEMS Data") {
+  df_wide %>% 
+    select(timestamp, mass_28, mass_29, mass_30, mass_32, mass_40) %>% 
+    pivot_longer(cols = starts_with("mass"), names_to = "mass", names_prefix = "mass_", values_to = "pressure") |> 
+    ggplot(aes(timestamp, pressure, color = mass)) +
+      geom_line() +
+      labs(title = title,
+           x = "",
+           y = "Partial pressure [log Pa]") +
+      scale_y_log10()
+}
+
+#' plot of RGA data
+#' 
+#' @param df_wide A dataframe of RGA data in wide format
+#' @param title Title of the plot
+#' 
+#' @return A dygraph object
+plot_rga_conc <- function(df_wide, title = "GEMS Data") {
+  df_wide %>% 
+    select(et, umol_29, umol_30, umol_40) %>% 
+    pivot_longer(cols = starts_with("umol"), names_to = "species", names_prefix = "umol_", values_to = "conc") |> 
+    mutate(Species = case_when(species == 29 ~ "14/15N2",
+                               species == 30 ~ "15/15N2",
+                               species == 40 ~ "Argon")) |>
+    ggplot(aes(et/3600, conc, color = Species)) +
+      geom_line() +
+      labs(title = title,
+           x = "Elapsed time [h]",
+           y = "Concentration [log umol]") +
+      scale_y_log10()
+}
