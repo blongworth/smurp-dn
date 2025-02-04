@@ -171,7 +171,34 @@ norm_rga <- function(df,
            # molar concentration based on nitrogen saturation
            umol_29 = mass_29_28 * nit_sat_umol,
            umol_30 = mass_30_28 * nit_sat_umol,
-           umol_40 = mass_40_28 * (ar_sat_umol/bg_40_28))
+           umol_40 = mass_40_28 * (ar_sat_umol/bg_40_28),
+    )
+}
+
+#' Correct for loss of N2 using Ar concentration
+#'
+#' From Koop-Jakobsen et al. (2009)
+#' 
+#' @param n_conc Concentration of nitrogen species
+#' @param ar_conc Concentration of argon
+#' @param ar_init Initial concentration of argon spike
+#' @param ar_bg Background concentration of argon 
+#'
+#' @returns Corrected concentration of nitrogen species
+#' @export
+ar_loss_corr <- function(n_conc, ar_conc, ar_init, ar_bg) {
+  n_conc_cor <- n_conc * ((ar_init - ar_bg) / (ar_conc - ar_bg))
+  n_conc_cor
+}
+
+
+rga_loss_corr <- function(df, 
+                     ar_sat_umol,
+                     peak_umol_40) {
+  df %>% 
+    mutate(umol_29_cor = ar_loss_corr(umol_29, umol_40, peak_umol_40, ar_sat_umol),
+           umol_30_cor = ar_loss_corr(umol_30, umol_40, peak_umol_40, ar_sat_umol),
+    )
 }
 
 #' Calculate rate based on slope of linear fit
@@ -179,15 +206,15 @@ norm_rga <- function(df,
 #' @param df a dataframe with 2 columns: elapsed time (sec) and the measurement of interest
 #' @param et_range 2 element vector with the range of elapsed times to calculate rate over
 #'
-#' @return A rate in units of measurement per day
+#' @return A rate in units of measurement per second
 #' @export
-calc_rate <- function(df, et_center){
+calc_rate <- function(df, et_center, var = umol_30) {
   sdf <- df %>% 
-    select(et, umol_30) %>% 
+    select(et, {{ var }}) %>% 
     filter(et > et_center - 1000,
            et < et_center + 1000)
   
-  coef(lm(sdf[[2]] ~ sdf[[1]]))[2] * 3600
+  coef(lm(sdf[[2]] ~ sdf[[1]]))[2]
 }
 
 #' Interactive plot of RGA data

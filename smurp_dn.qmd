@@ -29,11 +29,21 @@ over the three replicates.
 Sensitivity of n2 and Ar sat to temp:
 
 ```{r}
-sat_sens <- tibble(temp = c(23, 22, 19), sal = 31)
+# range of temps from 15 to 25 by 1/10 degree
+
+sat_sens <- tibble(temp = seq(15, 25, by = 0.1), sal = 31)
 sat_sens <- sat_sens |> 
-  mutate(n2_sat = cal_n2_sat(sal, temp),
-         ar_sat = cal_ar_sat(sal, temp))
+  mutate(nitrogen = cal_n2_sat(sal, temp),
+         argon = cal_ar_sat(sal, temp),
+         n2ar = nitrogen / argon)
 sat_sens
+
+sat_sens |> 
+  pivot_longer(-c(temp, sal), names_to = "gas", values_to = "sat") |> 
+  ggplot(aes(temp, sat, color = gas)) +
+  geom_line() + 
+  facet_grid(rows = "gas", scales = "free_y")
+  
 ```
 
 ### Calculate constants
@@ -53,6 +63,9 @@ ar_sat_umol <- cal_ar_sat(sal = lab_sal, temp = lab_temp)
 # Chamber area
 dia <- 0.09 # m
 area <- pi * (dia / 2)^2 # m2
+
+# label added
+umol_label = 100
 ```
 
 ### Experiment metadata
@@ -116,7 +129,7 @@ t0 <- as.POSIXct(c("2024-08-19 15:30:00",
                    "2024-08-22 13:14:00",
                    "2024-09-11 13:33:00",
                    "2024-09-12 16:30:00",
-                    "2024-09-13 12:34:00",
+                   "2024-09-13 12:34:00",
                    "2024-09-16 14:04:00",
                    "2024-09-24 13:27:00",
                    "2024-09-25 11:24:00",
@@ -264,12 +277,47 @@ t_peak = c(72000, 41000, 44000, 23000,
            48000, 57000, 32000, 37000)
 ```
 
-add times to data
+Argon max conc
+
+```{r}
+#| eval: false
+
+# use for zoomable interactive plot
+plot_40 <- function(df, title) {
+    df %>% 
+    select(et, umol_40) %>% 
+    dygraph(main = title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_40)) |> 
+  pull(plots)
+```
+
+Record peak DN conc
+
+```{r}
+ar_peak = c(24, 25, 25, 27, 29, 25, 30, 30, 36, 32, 31, 34)
+```
+
+add times and argon conc to data
 
 ```{r}
 alldata_norm <- alldata_norm |> 
   mutate(t_anox = t_anox,
-         t_peak = t_peak)
+         t_peak = t_peak,
+         ar_peak = ar_peak)
+```
+
+correct concentrations for argon loss
+
+```{r}
+alldata_norm <- alldata_norm |> 
+  mutate(data_norm_cor = pmap(list(data_norm, ar_sat_umol, ar_peak), 
+                          rga_loss_corr))
 ```
 
 ## Calculate final rates
@@ -277,57 +325,73 @@ alldata_norm <- alldata_norm |>
 ### Ar loss rates
 
 ```{r}
-calc_ar_loss_rate <- function(df, t_o2_min) {
-  ar <- df |> 
-    select(et, umol_40) |>  
-    filter(et > t_o2_min - 1000,
-           et < t_o2_min + 1000)
-  
-  coef(lm(umol_40 ~ et, data = ar))[2] * 3600
-}
-
 alldata_ar <- alldata_norm |> 
   mutate(ar_loss_init = pmap_dbl(list(data_norm, 10000),
-                             calc_ar_loss_rate),
+                             \(x, y) calc_rate(x, y, umol_40)),
          ar_loss_20 = pmap_dbl(list(data_norm, .2 * t_peak),
-                             calc_ar_loss_rate),
+                             \(x, y) calc_rate(x, y, umol_40)),
          ar_loss_anox = pmap_dbl(list(data_norm, t_anox),
-                             calc_ar_loss_rate),
+                             \(x, y) calc_rate(x, y, umol_40)),
          ar_loss_max = pmap_dbl(list(data_norm, t_peak - 1000),
-                             calc_ar_loss_rate),)
+                             \(x, y) calc_rate(x, y, umol_40)),
+                             )
 ```
 
 ### DN Rates
 
 DN rate at O2 minimum and max mass 30
 
+Time to peak derived production rate
+
+If peak marks all label consumed, rate is label / time to peak
+
 ```{r}
 alldata_dn <- alldata_ar |> 
-  mutate(dn_init = pmap_dbl(list(data_norm, 10000),
+  mutate(dn_init = pmap_dbl(list(data_norm_cor, 10000),
                                 calc_rate),
-         dn_20 = pmap_dbl(list(data_norm, .2 * t_peak),
-                             calc_rate),
-         dn_anox = pmap_dbl(list(data_norm, t_anox),
+         dn_20 = pmap_dbl(list(data_norm_cor, .2 * t_peak),
                                 calc_rate),
-         dn_max = pmap_dbl(list(data_norm, t_peak - 1000),
-                                   calc_rate))
+         dn_anox = pmap_dbl(list(data_norm_cor, t_anox),
+                                calc_rate),
+         dn_max = pmap_dbl(list(data_norm_cor, t_peak - 1000),
+                                calc_rate),
+         dn_ttp = umol_label/t_peak)
 ```
 
 Ar loss corrected rates
 
+time-to-peak rate does not need loss correction
+
+corrected using Koop-Jakobsen
+
 ```{r}
-alldata <- alldata_dn |> 
+alldata_dn <- alldata_dn |> 
+  mutate(dn_init_cor = pmap_dbl(list(data_norm_cor, 10000),
+                             \(x, y) calc_rate(x, y, umol_30_cor)),
+         dn_20_cor = pmap_dbl(list(data_norm_cor, .2 * t_peak),
+                             \(x, y) calc_rate(x, y, umol_30_cor)),
+         dn_anox_cor = pmap_dbl(list(data_norm_cor, t_anox),
+                             \(x, y) calc_rate(x, y, umol_30_cor)),
+         dn_max_cor = pmap_dbl(list(data_norm_cor, t_peak - 1000),
+                             \(x, y) calc_rate(x, y, umol_30_cor)),
+         )
+```
+
+Naive correction
+
+```{r}
+alldata_raw <- alldata_dn |> 
   mutate(dn_init_ar_cor = dn_init - ar_loss_init,
         dn_20_ar_cor = dn_20 - ar_loss_20,
         dn_anox_ar_cor = dn_anox - ar_loss_anox,
         dn_max_ar_cor = dn_max - ar_loss_max)
 ```
 
-Scale rates to umol m-2 d-1
+Scale rates from umol per nalgene per second to umol m-2 h-1
 
 ```{r}
-alldata <- alldata |> 
-  mutate(across(starts_with(c("dn_", "ar_")), \(x) x / area))
+alldata <- alldata_raw |> 
+  mutate(across(starts_with(c("dn_", "ar_")), \(x) x / area * 3600))
 ```
 
 ## Write summary table to CSV
@@ -362,6 +426,7 @@ knitr::kable(digits = c(1, 1, 1, 1, 0, 0, 0),
 ## Summary plots
 
 ```{r}
+#| fig-height: 9
 init <- ggplot(alldata, aes(experiment, dn_init_ar_cor)) +
   geom_boxplot() +
   labs(title = "Initial DN rate (Ar corrected)",
@@ -388,7 +453,50 @@ max <- ggplot(alldata, aes(experiment, dn_max_ar_cor)) +
   labs(title = "Max DN rate (Ar corrected)",
        y = "15N2 production [umol/m2/h]")
 
-init / tw / ox / max + plot_layout(axis_titles = "collect")
+ttp <- ggplot(alldata, aes(experiment, dn_ttp)) +
+  geom_boxplot() +
+  labs(title = "Time-to-peak-based DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]")
+
+init / tw / ox / max / ttp + plot_layout(axis_titles = "collect")
+```
+
+with Koop-Jakobsen Ar cor
+
+```{r}
+#| fig-height: 9
+init <- ggplot(alldata, aes(experiment, dn_init_cor)) +
+  geom_boxplot() +
+  labs(title = "Initial DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+tw <- ggplot(alldata, aes(experiment, dn_20_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at 20% max (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+ox <- ggplot(alldata, aes(experiment, dn_anox_cor)) +
+  geom_boxplot() +
+  labs(title = "DN rate at O2 min (Ar corrected)",
+       y = "15N2 production [umol/m2/h]") +
+  theme(axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank())
+
+max <- ggplot(alldata, aes(experiment, dn_max_cor)) +
+  geom_boxplot() +
+  labs(title = "Max DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]")
+
+ttp <- ggplot(alldata, aes(experiment, dn_ttp)) +
+  geom_boxplot() +
+  labs(title = "Time-to-peak-based DN rate (Ar corrected)",
+       y = "15N2 production [umol/m2/h]")
+
+init / tw / ox / max / ttp + plot_layout(axis_titles = "collect")
 ```
 
 same, no max
@@ -474,17 +582,17 @@ df[[1]] |>
 
 
 
-### Argon
+### Argon Concentration
 
 ```{r}
 #| warning: false
 plot_ar_gg <- function(df, title) {
     df %>% 
-    filter(mass_40_28 < 0.1) |> 
-    ggplot(aes(et/3600, mass_40_28)) + 
+    filter(umol_40 < 40) |> 
+    ggplot(aes(et/3600, umol_40)) + 
     geom_line() + 
-    ylim(0.02, 0.1) +
-    xlim(-.5, 20) +
+    ylim(5, 50) +
+    xlim(-0.5, 20) +
     ggtitle(title)
 }
 
@@ -541,6 +649,27 @@ alldata_norm |>
   wrap_plots() + plot_layout(axis_titles = "collect")
 ```
 
+Argon corrected
+
+```{r}
+#| warning: false
+plot_30_gg <- function(df, title) {
+    df %>% 
+    ggplot(aes(et/3600, umol_30_cor)) + 
+    xlim(-.5,21) +
+    ylim(0,400) +
+    geom_line() + 
+    ggtitle(title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm_cor, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_30_gg)) |> 
+  pull(plots) |> 
+  wrap_plots() + plot_layout(axis_titles = "collect")
+```
 # Chamber experiment descriptions
 
 Chamber is cut-off 1 l polyethelyne nalgene bottle.
