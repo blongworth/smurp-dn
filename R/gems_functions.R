@@ -204,7 +204,8 @@ rga_loss_corr <- function(df,
 #' Calculate rate based on slope of linear fit
 #'
 #' @param df a dataframe with 2 columns: elapsed time (sec) and the measurement of interest
-#' @param et_range 2 element vector with the range of elapsed times to calculate rate over
+#' @param et_center center et of range of elapsed times to calculate rate over
+#' @param var the variable to calculate the rate of
 #'
 #' @return A rate in units of measurement per second
 #' @export
@@ -270,4 +271,25 @@ plot_rga_conc <- function(df_wide, title = "GEMS Data") {
            x = "Elapsed time [h]",
            y = "Concentration [log umol]") +
       scale_y_log10()
+}
+
+moving_window_rate<- function(times, values, window_size = 120) {
+  df <- tibble(ts = times, x = values) %>%
+    arrange(ts)
+  
+  # Calculate linear regression slope for each window
+  window_slope = zoo::rollapply(
+    data = df,
+    width = window_size,
+    by.column = FALSE,
+    FUN = \(x) {
+      if (nrow(x) < window_size) return(NA)
+      model <- lm(x[,2] ~ x[,1])
+      coef(model)[2]  # Return the slope coefficient
+    },
+    fill = NA,
+    align = "right"
+  )
+  
+  return(window_slope)
 }

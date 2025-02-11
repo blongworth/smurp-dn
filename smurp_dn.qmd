@@ -312,12 +312,66 @@ alldata_norm <- alldata_norm |>
          ar_peak = ar_peak)
 ```
 
-correct concentrations for argon loss
+correct concentrations for argon loss (koop-jakobsen)
 
 ```{r}
 alldata_norm <- alldata_norm |> 
   mutate(data_norm_cor = pmap(list(data_norm, ar_sat_umol, ar_peak), 
                           rga_loss_corr))
+```
+
+## Running average rates
+
+calculate running mean rates for Ar loss and N production using running slopes
+
+```{r}
+calc_slopes <- function(data_norm) {
+  data_norm |> 
+    mutate(rate_29 = moving_window_rate(et, umol_29),
+           rate_30 = moving_window_rate(et, umol_30),
+           rate_40 = moving_window_rate(et, umol_40))
+}
+
+alldata_norm <- alldata_norm |> 
+  mutate(data_norm_rates = map(data_norm,
+                               calc_slopes))
+```
+
+correct N rates for Ar loss using Δ[N] + Δ[Ar] = Δ[N]cor
+
+```{r}
+ar_cor <- function(data_norm_rates) {
+  data_norm_rates |> 
+    mutate(rate_29_cor = rate_29 - rate_40,
+           rate_30_cor = rate_30 - rate_40)
+}
+alldata_norm <- alldata_norm |> 
+  mutate(data_norm_rates = map(data_norm_rates,
+                               ar_cor))
+```
+
+```{r}
+#| eval: false
+
+# use for zoomable interactive plot
+plot_rates <- function(df, title) {
+    df %>% 
+    select(et, rate_29, rate_29_cor, rate_30, rate_30_cor, rate_40) %>% 
+    dygraph(main = title)
+}
+
+alldata_norm |> 
+  mutate(plots = pmap(list(data_norm_rates, 
+                           paste(experiment, 
+                                 replicate, sep = "-")), 
+                      plot_rates)) |> 
+  pull(plots)
+
+plot_rates(alldata_norm[[16]][[1]], "test")
+ggplot(alldata_norm[[16]][[7]], aes(et / 3600, rate_30_cor / area * 3600)) + 
+  geom_line() + 
+  xlim(0, 20) +
+  ylim(-1000, 2000)
 ```
 
 ## Calculate final rates
@@ -591,8 +645,9 @@ plot_ar_gg <- function(df, title) {
     filter(umol_40 < 40) |> 
     ggplot(aes(et/3600, umol_40)) + 
     geom_line() + 
-    ylim(5, 50) +
-    xlim(-0.5, 20) +
+    #ylim(5, 50) +
+    xlim(0, 19) +
+    scale_y_log10() +
     ggtitle(title)
 }
 
